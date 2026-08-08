@@ -1,0 +1,17 @@
+langchain 
+langchain-community 
+langchain-groq 
+langchain-huggingface 
+langchain-text-splitters 
+faiss-cpu 
+sentence-transformers 
+pymupdf 
+python-docx 
+pandas 
+openpyxl 
+pillow
+fastapi
+python-multipart
+langchain-faiss
+uvicorn
+python-dotenv
