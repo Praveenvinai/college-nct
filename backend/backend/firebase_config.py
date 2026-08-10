@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -27,12 +28,24 @@ def _initialize_firebase() -> None:
             "Set it in backend/.env without hardcoding it in Python."
         )
 
-    if not _SERVICE_ACCOUNT_PATH.is_file():
-        raise FileNotFoundError(
-            f"Firebase service account file not found at: {_SERVICE_ACCOUNT_PATH}"
-        )
+    service_account_json = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
+    if service_account_json:
+        try:
+            service_account_info = json.loads(service_account_json)
+            cred = credentials.Certificate(service_account_info)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON environment variable: {exc}"
+            ) from exc
+    else:
+        if not _SERVICE_ACCOUNT_PATH.is_file():
+            raise FileNotFoundError(
+                f"Firebase service account credentials not found. "
+                f"Please set the FIREBASE_SERVICE_ACCOUNT_JSON environment variable "
+                f"or place the credentials file at: {_SERVICE_ACCOUNT_PATH}"
+            )
+        cred = credentials.Certificate(str(_SERVICE_ACCOUNT_PATH))
 
-    cred = credentials.Certificate(str(_SERVICE_ACCOUNT_PATH))
     firebase_admin.initialize_app(cred, {"databaseURL": db_url})
 
 
