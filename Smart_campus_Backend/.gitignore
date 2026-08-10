@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Environment & secrets (never commit)
+.env
+.env.*
+!.env.example
+*.pem
+*serviceAccount*.json
+firebase-adminsdk*.json
+firebase-service-account.json
+credentials.json
+secrets/
+*.pyc
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local face photos & temporary PDF uploads (stay off cloud + off git)
+local_faces/
+uploads/
+tmp/
+temp/
+*.jpg
+*.jpeg
+*.png
+*.pdf
+
+# Logs & local DB leftovers
+*.log
+*.sqlite3
+instance/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+htmlcov/
