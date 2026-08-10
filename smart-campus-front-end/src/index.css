@@ -1,0 +1,58 @@
+@import "tailwindcss";
+
+@layer utilities {
+  .font-serif {
+    font-family: 'Instrument Serif', Georgia, serif;
+  }
+  .glow-earthy {
+    box-shadow: 0 0 35px -5px rgba(224, 215, 208, 0.15), 0 0 15px -2px rgba(153, 143, 134, 0.12);
+  }
+  .glow-bronze {
+    box-shadow: 0 0 30px -5px rgba(82, 70, 57, 0.4), 0 0 12px -2px rgba(82, 70, 57, 0.25);
+  }
+  .glass-panel {
+    background: rgba(23, 22, 20, 0.85);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(82, 70, 57, 0.35);
+  }
+  .glass-card {
+    background: linear-gradient(135deg, rgba(34, 31, 28, 0.8) 0%, rgba(23, 22, 20, 0.95) 100%);
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(82, 70, 57, 0.3);
+  }
+}
+
+@keyframes soundwave {
+  0%, 100% { height: 8px; }
+  50% { height: 32px; }
+}
+
+.animate-soundwave {
+  animation: soundwave 1.2s ease-in-out infinite;
+}
+
+@keyframes scanLine {
+  0% { top: 0%; opacity: 0.8; }
+  50% { top: 95%; opacity: 1; }
+  100% { top: 0%; opacity: 0.8; }
+}
+
+.animate-scan-line {
+  animation: scanLine 2.8s ease-in-out infinite;
+}
+
+/* Custom scrollbar for Earthy palette */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #171614;
+}
+::-webkit-scrollbar-thumb {
+  background: #383129;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #524639;
+}
