@@ -21,6 +21,27 @@ def get_student(student_id: str) -> dict | None:
     return data
 
 
+def list_students() -> list[dict]:
+    """Return all students from Firebase as a read-only list (no writes)."""
+    students = get_ref("students").get() or {}
+    if not isinstance(students, dict):
+        return []
+
+    result: list[dict] = []
+    for student_id, student in students.items():
+        if not isinstance(student, dict):
+            continue
+        result.append(
+            {
+                "student_id": student_id,
+                "name": student.get("name", ""),
+                "department": student.get("department", ""),
+                "rfid_uid": student.get("rfid_uid", ""),
+            }
+        )
+    return result
+
+
 def log_face_attendance(student_id: str, confidence: float) -> dict:
     """Verify student exists and push a face-recognition attendance record."""
     student = get_student(student_id)

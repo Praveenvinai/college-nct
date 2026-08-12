@@ -14,6 +14,9 @@ let purchasesDb: PurchaseRecord[] = [...INITIAL_PURCHASES];
 let ticketsDb: SupportTicket[] = [];
 
 const AI_TUTOR_URL = (process.env.AI_TUTOR_URL || "http://127.0.0.1:8001").replace(/\/$/, "");
+const BACKEND_URL = (
+  process.env.BACKEND_URL || "https://college-nct-backend.onrender.com"
+).replace(/\/$/, "");
 
 // Gemini AI client (optional TTS / legacy fallback)
 const getGeminiClient = () => {
@@ -38,6 +41,38 @@ async function startServer() {
   // Health check
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok", institution: "National College Portal", timestamp: new Date().toISOString() });
+  });
+
+  // Diagnostic: probe deployed Flask backend (does not replace mock APIs)
+  app.get("/api/backend-health", async (_req, res) => {
+    try {
+      const upstream = await fetch(`${BACKEND_URL}/api/health`, {
+        method: "GET",
+        signal: AbortSignal.timeout(15000),
+      });
+      const data = await upstream.json().catch(() => null);
+      if (!upstream.ok) {
+        return res.status(upstream.status).json({
+          status: "error",
+          backend_url: BACKEND_URL,
+          message: `Render backend returned HTTP ${upstream.status}`,
+          upstream: data,
+        });
+      }
+      return res.json({
+        status: "ok",
+        backend_url: BACKEND_URL,
+        upstream: data,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      return res.status(502).json({
+        status: "error",
+        backend_url: BACKEND_URL,
+        message: `Cannot reach Render backend at ${BACKEND_URL}/api/health`,
+        detail: message,
+      });
+    }
   });
 
   // Get all registered students
