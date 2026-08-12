@@ -1,5 +1,7 @@
+import "dotenv/config";
 import express from "express";
 import path from "path";
+import { Readable } from "stream";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import { INITIAL_STUDENTS, INITIAL_STORE_ITEMS, INITIAL_PURCHASES } from "./src/mockData";
@@ -11,7 +13,9 @@ let storeDb: StoreItem[] = [...INITIAL_STORE_ITEMS];
 let purchasesDb: PurchaseRecord[] = [...INITIAL_PURCHASES];
 let ticketsDb: SupportTicket[] = [];
 
-// Gemini AI client initialization
+const AI_TUTOR_URL = (process.env.AI_TUTOR_URL || "http://127.0.0.1:8001").replace(/\/$/, "");
+
+// Gemini AI client (optional TTS / legacy fallback)
 const getGeminiClient = () => {
   return new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY || "DUMMY_KEY",
@@ -182,84 +186,155 @@ async function startServer() {
     return res.json({ history: purchasesDb });
   });
 
-  // AI Tutor Response Route (Gemini 3.6 Flash with Multi-Doc RAG & PDF Context)
-  app.post("/api/tutor/chat", async (req, res) => {
-    const { prompt, pdfContext, pdfContexts, history } = req.body;
-
+  // Proxy PDF upload → FastAPI RAG (/upload)
+  app.post("/api/tutor/upload", async (req, res) => {
     try {
-      if (!prompt) {
-        return res.status(400).json({ error: "Prompt is required." });
+      const contentType = req.headers["content-type"];
+      if (!contentType || !contentType.includes("multipart/form-data")) {
+        return res.status(400).json({ error: "Expected multipart/form-data with a PDF file." });
       }
 
-      const aiClient = getGeminiClient();
+      const upstream = await fetch(`${AI_TUTOR_URL}/upload`, {
+        method: "POST",
+        headers: { "content-type": contentType },
+        // Stream the raw multipart body through to FastAPI
+        body: Readable.toWeb(req) as unknown as BodyInit,
+        duplex: "half",
+      } as RequestInit);
 
-      let systemInstruction = `You are "Professor Cybera", National College's elite AI Voice Tutor and Academic Scholar Assistant.
-Your goal is to explain complex academic concepts with clarity, rigor, precision, and encouraging mentorship.
-You answer questions clearly using structured markdown, formulas, bullet points, and practical examples when appropriate.`;
-
-      let compiledContext = "";
-      let activeDocNames: string[] = [];
-
-      if (Array.isArray(pdfContexts) && pdfContexts.length > 0) {
-        compiledContext = pdfContexts
-          .map((doc: { name: string; contentSnippet: string; pages?: number }, idx: number) => {
-            activeDocNames.push(doc.name);
-            return `=== DOCUMENT #${idx + 1}: "${doc.name}" (${doc.pages || 8} Pages) ===\n${doc.contentSnippet.substring(0, 4000)}`;
-          })
-          .join("\n\n");
-      } else if (pdfContext) {
-        compiledContext = typeof pdfContext === "string" ? pdfContext : JSON.stringify(pdfContext);
-        activeDocNames.push("Uploaded Coursework PDF");
+      const data = await upstream.json();
+      if (!upstream.ok || data.error) {
+        return res.status(upstream.ok ? 400 : upstream.status).json({
+          error: data.error || "PDF upload failed on AI Tutor service.",
+          details: data,
+        });
       }
-
-      if (compiledContext) {
-        systemInstruction += `\n\n[CONCURRENT ACADEMIC DOCUMENTS INDEXED (${activeDocNames.length} ACTIVE)]:
-The student has loaded the following course materials into the RAG memory bank:
---- START MULTI-DOCUMENT RAG MATERIAL ---
-${compiledContext.substring(0, 16000)}
---- END MULTI-DOCUMENT RAG MATERIAL ---
-
-CRITICAL MULTI-DOCUMENT RAG INSTRUCTIONS:
-1. Cross-reference concepts across ALL active documents where relevant.
-2. Explicitly cite source document names (e.g., "According to [Document Name]...") when pulling quotes, formulas, or facts.
-3. Compare and synthesize insights across multiple lecture notes or textbooks when the prompt asks for a summary or comparison.`;
-      }
-
-      let contents = prompt;
-      if (history && Array.isArray(history) && history.length > 0) {
-        const formattedHistory = history
-          .slice(-6)
-          .map((msg: { sender: string; text: string }) => `${msg.sender.toUpperCase()}: ${msg.text}`)
-          .join("\n");
-        contents = `Prior Conversation History:\n${formattedHistory}\n\nStudent Current Question: ${prompt}`;
-      }
-
-      const response = await aiClient.models.generateContent({
-        model: "gemini-3.6-flash",
-        contents,
-        config: {
-          systemInstruction,
-          temperature: 0.7,
-        },
-      });
-
-      const responseText = response.text || "I have analyzed your query and cross-referenced your active course documents. How else can I assist your study session?";
 
       return res.json({
-        text: responseText,
-        pdfUsed: activeDocNames.length > 0,
-        activeDocs: activeDocNames,
+        success: true,
+        filename: data.filename,
+        pages: data.pages,
+        chunks: data.chunks,
+        message: data.message,
+        documents: data.documents || [],
       });
     } catch (err: unknown) {
-      console.error("AI Tutor Gemini API Error:", err);
-      // Friendly fallback if API key or network is unavailable
+      console.error("AI Tutor upload proxy error:", err);
       const errorMsg = err instanceof Error ? err.message : String(err);
-      return res.json({
-        text: `I have received your query regarding your coursework. ${pdfContexts?.length ? `I cross-referenced ${pdfContexts.length} active PDFs.` : "I am reviewing your academic request."}\n\nKey Synthesis Breakdown:\n- Verified core principles across active modules.\n- Consulted document vector indices.\n\n*(Note: AI tutor active response generated. ${errorMsg ? `Details: ${errorMsg}` : ''})*`,
-        pdfUsed: Array.isArray(pdfContexts) && pdfContexts.length > 0,
-        activeDocs: Array.isArray(pdfContexts) ? pdfContexts.map((d: any) => d.name) : [],
+      return res.status(502).json({
+        error: `AI Tutor service unreachable at ${AI_TUTOR_URL}. Is rag.py running?`,
+        details: errorMsg,
       });
     }
+  });
+
+  // Clear RAG knowledge base on FastAPI
+  app.delete("/api/tutor/docs", async (_req, res) => {
+    try {
+      const upstream = await fetch(`${AI_TUTOR_URL}/knowledge-base`, { method: "DELETE" });
+      const data = await upstream.json();
+      return res.json(data);
+    } catch (err: unknown) {
+      console.error("AI Tutor clear-docs proxy error:", err);
+      return res.status(502).json({
+        error: `AI Tutor service unreachable at ${AI_TUTOR_URL}.`,
+      });
+    }
+  });
+
+  // AI Tutor chat → FastAPI RAG (/chat), Gemini fallback if RAG is down
+  app.post("/api/tutor/chat", async (req, res) => {
+    const { prompt, pdfContexts, history, filenames } = req.body;
+
+    if (!prompt) {
+      return res.status(400).json({ error: "Prompt is required." });
+    }
+
+    const activeFilenames: string[] =
+      Array.isArray(filenames) && filenames.length > 0
+        ? filenames
+        : Array.isArray(pdfContexts)
+          ? pdfContexts.map((d: { name: string }) => d.name).filter(Boolean)
+          : [];
+
+    let question = prompt;
+    if (history && Array.isArray(history) && history.length > 0) {
+      const formattedHistory = history
+        .slice(-6)
+        .map((msg: { sender: string; text: string }) => `${msg.sender.toUpperCase()}: ${msg.text}`)
+        .join("\n");
+      question = `Prior Conversation History:\n${formattedHistory}\n\nStudent Current Question: ${prompt}`;
+    }
+
+    try {
+      const upstream = await fetch(`${AI_TUTOR_URL}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question,
+          filenames: activeFilenames.length > 0 ? activeFilenames : null,
+        }),
+      });
+
+      if (upstream.ok) {
+        const data = await upstream.json();
+        const cited =
+          Array.isArray(data.activeDocs) && data.activeDocs.length > 0
+            ? data.activeDocs
+            : activeFilenames;
+
+        return res.json({
+          text: data.answer,
+          pdfUsed: data.source === "uploaded_document",
+          activeDocs: cited,
+          source: data.source,
+          retrieved_pages: data.retrieved_pages || [],
+        });
+      }
+
+      console.warn("AI Tutor RAG returned non-OK status:", upstream.status);
+    } catch (err: unknown) {
+      console.error("AI Tutor RAG proxy error:", err);
+    }
+
+    // Optional Gemini fallback when FastAPI is offline
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        const aiClient = getGeminiClient();
+        let systemInstruction = `You are "Professor Cybera", National College's elite AI Voice Tutor.
+Explain academic concepts clearly with structure, examples, and mentorship.`;
+
+        if (Array.isArray(pdfContexts) && pdfContexts.length > 0) {
+          const compiled = pdfContexts
+            .map(
+              (doc: { name: string; contentSnippet?: string; pages?: number }, idx: number) =>
+                `=== DOCUMENT #${idx + 1}: "${doc.name}" ===\n${(doc.contentSnippet || "").substring(0, 4000)}`
+            )
+            .join("\n\n");
+          systemInstruction += `\n\nCourse materials:\n${compiled.substring(0, 16000)}`;
+        }
+
+        const response = await aiClient.models.generateContent({
+          model: "gemini-2.0-flash",
+          contents: question,
+          config: { systemInstruction, temperature: 0.7 },
+        });
+
+        return res.json({
+          text: response.text || "I analyzed your query. How else can I help?",
+          pdfUsed: activeFilenames.length > 0,
+          activeDocs: activeFilenames,
+          source: "gemini_fallback",
+        });
+      } catch (geminiErr) {
+        console.error("Gemini fallback error:", geminiErr);
+      }
+    }
+
+    return res.status(502).json({
+      error: `AI Tutor RAG service is unreachable at ${AI_TUTOR_URL}. Start it with: python ai-tutor/rag/rag.py`,
+      text: null,
+    });
   });
 
   // AI Tutor Text-To-Speech Generation Route

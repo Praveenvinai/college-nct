@@ -7,7 +7,6 @@ import {
   FileText, 
   Upload, 
   Send, 
-  Trash2, 
   Bot, 
   User, 
   Check, 
@@ -16,13 +15,10 @@ import {
   FileCheck, 
   Layers, 
   Eye, 
-  Plus, 
   BookOpen, 
-  FilePlus,
   ToggleLeft,
   ToggleRight,
   Compass,
-  CheckCircle2
 } from 'lucide-react';
 import { TutorMessage, PDFDocument } from '../types';
 
@@ -30,43 +26,13 @@ interface AITutorViewProps {
   studentName: string;
 }
 
-const SAMPLE_PDF_DOCS: PDFDocument[] = [
-  {
-    id: 'sample-pdf-1',
-    name: 'CS101_Lecture_03_Neural_Networks.pdf',
-    pages: 14,
-    size: '1.8 MB',
-    uploadedAt: 'Today 09:15 AM',
-    contentSnippet: `Chapter 3: Artificial Neural Networks & Vector Spaces.
-1. Multi-Layer Perceptrons (MLP): Composed of input, hidden, and output layers with non-linear activation functions (ReLU, Sigmoid, GELU).
-2. Forward Propagation: Matrix multiplication W * X + b followed by activation f(z).
-3. Backpropagation & Gradient Descent: Chain rule parameter updates using loss functions (Cross-Entropy, MSE).
-4. Optimization: Adam Optimizer with learning rate decay schedules. Learning rate eta = 0.001.`,
-    isActive: true,
-  },
-  {
-    id: 'sample-pdf-2',
-    name: 'MA201_Multivariable_Calculus_CheatSheet.pdf',
-    pages: 8,
-    size: '0.9 MB',
-    uploadedAt: 'Today 10:30 AM',
-    contentSnippet: `Section 4: Partial Derivatives & Gradient Vectors.
-1. Gradient Vector Grad F = [dF/dx, dF/dy, dF/dz]. Represents direction of steepest ascent.
-2. Jacobian Matrix: Matrix of all first-order partial derivatives for vector-valued functions.
-3. Hessian Matrix: Second-order partial derivative matrix used in optimization and convexity testing.
-4. Chain Rule in Higher Dimensions: dz/dt = (dz/dx)(dx/dt) + (dz/dy)(dy/dt).`,
-    isActive: true,
-  }
-];
-
 export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
   const [messages, setMessages] = useState<TutorMessage[]>([
     {
       id: 'msg-1',
       sender: 'ai',
-      text: `Welcome ${studentName}! I am Professor Cybera, your National College AI Scholar Tutor. I now support **Concurrent Multi-PDF RAG Synthesis**! You can upload multiple PDFs (lecture slides, textbook chapters, lab notes), toggle which documents are active, and ask me to cross-reference or synthesize information across all your active course documents simultaneously.`,
+      text: `Welcome ${studentName}! I am Professor Cybera, your National College AI Scholar Tutor. Upload course PDFs and I will index them with the RAG engine (FAISS + Groq). Then ask questions — I retrieve relevant pages and cite your documents.`,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      pdfSources: ['CS101_Lecture_03_Neural_Networks.pdf', 'MA201_Multivariable_Calculus_CheatSheet.pdf']
     }
   ]);
 
@@ -76,8 +42,7 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
   const [autoSpeechEnabled, setAutoSpeechEnabled] = useState<boolean>(true);
   
-  // Multi-PDF State
-  const [pdfDocuments, setPdfDocuments] = useState<PDFDocument[]>(SAMPLE_PDF_DOCS);
+  const [pdfDocuments, setPdfDocuments] = useState<PDFDocument[]>([]);
   const [isParsingPDF, setIsParsingPDF] = useState<boolean>(false);
   const [previewingDoc, setPreviewingDoc] = useState<PDFDocument | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -85,7 +50,6 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const recognitionRef = useRef<any>(null);
 
-  // Auto-scroll chat
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -94,7 +58,6 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
     scrollToBottom();
   }, [messages, isLoading]);
 
-  // Speech Recognition Setup (Web Speech API)
   useEffect(() => {
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -124,7 +87,6 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
     }
   }, []);
 
-  // Toggle Voice Input
   const toggleListening = () => {
     if (!recognitionRef.current) {
       alert("Speech recognition is not supported in your browser. You can type your query in the input field.");
@@ -141,7 +103,6 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
     }
   };
 
-  // Speak Text using SpeechSynthesis
   const speakText = (text: string) => {
     if (!('speechSynthesis' in window)) return;
 
@@ -158,97 +119,109 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
     window.speechSynthesis.speak(utterance);
   };
 
-  // Handle Multi-PDF Uploads
-  const handleMultiplePDFUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleMultiplePDFUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
+    const fileList: File[] = Array.from(files).filter((f: File) =>
+      f.name.toLowerCase().endsWith('.pdf')
+    );
+    if (fileList.length === 0) {
+      alert('Please upload PDF files only. The RAG engine indexes PDFs on the AI Tutor service.');
+      e.target.value = '';
+      return;
+    }
+
     setIsParsingPDF(true);
-
     const newDocs: PDFDocument[] = [];
-    let processedCount = 0;
+    const errors: string[] = [];
 
-    const fileList: File[] = Array.from(files);
-    fileList.forEach((file: File, index: number) => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const text = (event.target?.result as string) || '';
-        const doc: PDFDocument = {
-          id: `pdf-${Date.now()}-${index}`,
-          name: file.name,
-          pages: Math.floor(file.size / 20000) || Math.floor(Math.random() * 12) + 4,
+    for (const file of fileList) {
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await fetch('/api/tutor/upload', {
+          method: 'POST',
+          body: formData,
+        });
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+          errors.push(`${file.name}: ${data.error || 'upload failed'}`);
+          continue;
+        }
+
+        newDocs.push({
+          id: `pdf-${Date.now()}-${file.name}`,
+          name: data.filename || file.name,
+          pages: data.pages || 1,
           size: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
           uploadedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          contentSnippet: text.substring(0, 5000) || `Indexed contents of ${file.name}. Vector embeddings computed across document pages for multi-RAG retrieval.`,
-          isActive: true
-        };
-        newDocs.push(doc);
-        processedCount++;
+          contentSnippet: `Indexed on AI Tutor RAG · ${data.chunks ?? '?'} vector chunks · ${data.pages ?? '?'} pages with text.`,
+          isActive: true,
+        });
+      } catch (err) {
+        console.error('PDF upload error:', err);
+        errors.push(`${file.name}: AI Tutor service unreachable`);
+      }
+    }
 
-        if (processedCount === fileList.length) {
-          setTimeout(() => {
-            setPdfDocuments((prev) => [...prev, ...newDocs]);
-            setIsParsingPDF(false);
+    if (newDocs.length > 0) {
+      setPdfDocuments((prev) => [...prev, ...newDocs]);
+      const fileNames = newDocs.map((d) => d.name).join(', ');
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `msg-${Date.now()}`,
+          sender: 'ai',
+          text: `**${newDocs.length} PDF(s) indexed** in the RAG knowledge base: \`${fileNames}\`. Ask questions and I will retrieve relevant pages.`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          pdfSources: newDocs.map((d) => d.name),
+        },
+      ]);
+    }
 
-            // System Notification Message
-            const fileNames = newDocs.map(d => d.name).join(', ');
-            const systemMsg: TutorMessage = {
-              id: `msg-${Date.now()}`,
-              sender: 'ai',
-              text: `📄 **${newDocs.length} Document(s) Added to Multi-RAG Bank**: Indexed \`${fileNames}\`. You can now ask questions across all active course PDFs concurrently!`,
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              pdfSources: newDocs.map(d => d.name)
-            };
-            setMessages((prev) => [...prev, systemMsg]);
-          }, 800);
-        }
-      };
-      reader.readAsText(file);
-    });
+    if (errors.length > 0) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `msg-err-${Date.now()}`,
+          sender: 'ai',
+          text: `Some uploads failed:\n${errors.map((e) => `- ${e}`).join('\n')}\n\nMake sure the AI Tutor service is running (\`python ai-tutor/rag/rag.py\` on port 8001).`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        },
+      ]);
+    }
+
+    setIsParsingPDF(false);
+    e.target.value = '';
   };
 
-  // Toggle Document Active State
   const toggleDocActive = (id: string) => {
     setPdfDocuments((prev) =>
       prev.map((doc) => (doc.id === id ? { ...doc, isActive: !doc.isActive } : doc))
     );
   };
 
-  // Toggle All Documents Active/Inactive
   const setAllDocsActive = (active: boolean) => {
     setPdfDocuments((prev) => prev.map((doc) => ({ ...doc, isActive: active })));
   };
 
-  // Delete Individual PDF Document
   const removeDocument = (id: string) => {
     setPdfDocuments((prev) => prev.filter((doc) => doc.id !== id));
   };
 
-  // Clear All Documents
-  const clearAllDocuments = () => {
-    if (confirm("Are you sure you want to remove all PDF documents from the RAG bank?")) {
-      setPdfDocuments([]);
+  const clearAllDocuments = async () => {
+    if (!confirm('Remove all PDF documents from the RAG bank (local UI + server index)?')) return;
+    try {
+      await fetch('/api/tutor/docs', { method: 'DELETE' });
+    } catch (err) {
+      console.error('Failed to clear server KB:', err);
     }
+    setPdfDocuments([]);
   };
 
-  // Add Sample Preset Documents
-  const addSampleNotes = () => {
-    const extraDoc: PDFDocument = {
-      id: `sample-${Date.now()}`,
-      name: `AI_Ethics_and_Governance_Module_${pdfDocuments.length + 1}.pdf`,
-      pages: 12,
-      size: '1.2 MB',
-      uploadedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      contentSnippet: `Section 2: Ethical Considerations in Machine Intelligence.
-1. Bias Mitigation: Demographic parity, equalized odds, and data audit pipelines.
-2. Transparency & Explainability: SHAP values, LIME, and interpretable decision trees.
-3. Privacy Frameworks: Differential privacy mechanisms and federated learning protocols.`,
-      isActive: true
-    };
-    setPdfDocuments((prev) => [...prev, extraDoc]);
-  };
-
-  // Send Message with Multi-PDF Context
   const handleSendMessage = async (e?: React.FormEvent, customPrompt?: string) => {
     if (e) e.preventDefault();
     const queryText = customPrompt || inputQuery.trim();
@@ -268,7 +241,7 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
       sender: 'user',
       text: queryText,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      pdfSources: activeDocNames.length > 0 ? activeDocNames : undefined
+      pdfSources: activeDocNames.length > 0 ? activeDocNames : undefined,
     };
 
     setMessages((prev) => [...prev, userMsg]);
@@ -280,24 +253,38 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: queryText,
-          pdfContexts: activeDocs.map((doc) => ({
-            name: doc.name,
-            pages: doc.pages,
-            contentSnippet: doc.contentSnippet
-          })),
-          history: messages.slice(-4)
-        })
+          filenames: activeDocNames,
+          history: messages.slice(-4),
+        }),
       });
 
       const data = await response.json();
-      const aiResponseText = data.text || "I have analyzed your query across your active course documents.";
+
+      if (!response.ok || data.error) {
+        const errText =
+          data.error ||
+          'AI Tutor RAG is unreachable. Start it with: python ai-tutor/rag/rag.py';
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `ai-err-${Date.now()}`,
+            sender: 'ai',
+            text: errText,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          },
+        ]);
+        setIsLoading(false);
+        return;
+      }
+
+      const aiResponseText = data.text || 'I analyzed your query across the indexed course documents.';
 
       const aiMsg: TutorMessage = {
         id: `ai-${Date.now()}`,
         sender: 'ai',
         text: aiResponseText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        pdfSources: data.activeDocs || activeDocNames
+        pdfSources: data.activeDocs?.length ? data.activeDocs : activeDocNames,
       };
 
       setMessages((prev) => [...prev, aiMsg]);
@@ -307,12 +294,20 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
         speakText(aiResponseText);
       }
     } catch (err) {
-      console.error("Error communicating with AI tutor:", err);
+      console.error('Error communicating with AI tutor:', err);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `ai-err-${Date.now()}`,
+          sender: 'ai',
+          text: 'Could not reach the AI Tutor. Ensure the portal server and `ai-tutor/rag/rag.py` are both running.',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        },
+      ]);
       setIsLoading(false);
     }
   };
 
-  // Copy Text
   const handleCopy = (id: string, text: string) => {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
@@ -327,10 +322,8 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       
-      {/* Top Section Header & Visualizer Orb */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
-        {/* Tutor Identity */}
         <div className="lg:col-span-2 glass-card p-6 sm:p-8 rounded-3xl border border-slate-800 bg-slate-900/40 flex flex-col justify-between">
           <div>
             <div className="flex items-center space-x-3 mb-2">
@@ -338,18 +331,17 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
                 <Sparkles className="w-5 h-5 animate-spin" style={{ animationDuration: '8s' }} />
               </span>
               <div>
-                <div className="text-[9px] font-bold uppercase tracking-[0.3em] text-slate-500">Multi-PDF RAG Engine</div>
+                <div className="text-[9px] font-bold uppercase tracking-[0.3em] text-slate-500">FAISS + Groq RAG Engine</div>
                 <h2 className="text-2xl sm:text-3xl font-light text-white font-serif italic">
-                  AI Scholar Tutor & Multi-Doc Synthesis
+                  AI Scholar Tutor
                 </h2>
               </div>
             </div>
             <p className="text-xs text-slate-400 leading-relaxed mt-2 font-medium">
-              Powered by Gemini 3.6 Flash. Upload multiple course PDFs concurrently to index vector chunks. Cross-reference, compare theorems, and synthesize answers across your active library.
+              Connected to the local AI Tutor service. Upload PDFs to build a vector index, then ask questions with page-level retrieval and citations.
             </p>
           </div>
 
-          {/* Quick RAG Status Bar */}
           <div className="mt-4 pt-4 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center space-x-2 text-xs font-mono text-cyan-300">
               <Layers className="w-4 h-4 text-cyan-400 shrink-0" />
@@ -358,36 +350,24 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
               </span>
             </div>
 
-            <div className="flex items-center space-x-2">
-              <button
-                type="button"
-                onClick={addSampleNotes}
-                className="px-3.5 py-1.5 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[11px] font-bold uppercase tracking-wider transition-all flex items-center space-x-1.5 border border-slate-700"
-              >
-                <Plus className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Add Sample PDF</span>
-              </button>
-
-              <label className="flex items-center space-x-2 px-5 py-2 rounded-full bg-white text-slate-950 font-bold text-xs uppercase tracking-widest hover:bg-cyan-400 transition-colors shadow-md cursor-pointer">
-                <Upload className="w-3.5 h-3.5" />
-                <span>{isParsingPDF ? 'Indexing PDFs...' : 'Upload Course PDFs'}</span>
-                <input
-                  type="file"
-                  accept=".pdf,.txt"
-                  multiple
-                  onChange={handleMultiplePDFUpload}
-                  className="hidden"
-                />
-              </label>
-            </div>
+            <label className="flex items-center space-x-2 px-5 py-2 rounded-full bg-white text-slate-950 font-bold text-xs uppercase tracking-widest hover:bg-cyan-400 transition-colors shadow-md cursor-pointer">
+              <Upload className="w-3.5 h-3.5" />
+              <span>{isParsingPDF ? 'Indexing PDFs...' : 'Upload Course PDFs'}</span>
+              <input
+                type="file"
+                accept=".pdf,application/pdf"
+                multiple
+                onChange={handleMultiplePDFUpload}
+                className="hidden"
+                disabled={isParsingPDF}
+              />
+            </label>
           </div>
         </div>
 
-        {/* Animated Glowing AI Orb / Voice Visualizer */}
         <div className="glass-panel p-6 rounded-3xl border border-slate-800 flex flex-col items-center justify-center text-center relative overflow-hidden bg-slate-900/30">
           <div className="absolute inset-0 bg-gradient-to-b from-cyan-500/5 via-amber-500/5 to-transparent pointer-events-none"></div>
 
-          {/* Orb Outer Rings */}
           <div className="relative flex items-center justify-center my-2">
             <div className={`w-28 h-28 rounded-full border-2 border-cyan-400/40 flex items-center justify-center transition-all duration-500 ${
               isSpeaking ? 'animate-ping border-cyan-300 scale-110' : isListening ? 'border-rose-500 scale-105' : 'glow-cyan'
@@ -402,7 +382,7 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
 
           <div className="mt-3 space-y-1">
             <p className="text-xs font-bold text-white font-mono uppercase tracking-wider">
-              {isListening ? '🎙️ LISTENING TO VOICE...' : isSpeaking ? '🔊 PROFESSOR CYBERA SPEAKING...' : isLoading ? '🧠 CROSS-REFERENCING ALL PDFs...' : 'MULTI-RAG READY'}
+              {isListening ? 'LISTENING TO VOICE...' : isSpeaking ? 'PROFESSOR CYBERA SPEAKING...' : isLoading ? 'RETRIEVING FROM RAG...' : 'RAG READY'}
             </p>
             <p className="text-[11px] text-slate-400">
               {autoSpeechEnabled ? 'Voice Playback Active' : 'Voice Muted'}
@@ -413,18 +393,17 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
             onClick={() => setAutoSpeechEnabled(!autoSpeechEnabled)}
             className="mt-3 px-3 py-1 rounded-full text-[10px] font-bold font-mono border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
           >
-            {autoSpeechEnabled ? '🔊 Mute Audio' : '🔈 Unmute Audio'}
+            {autoSpeechEnabled ? 'Mute Audio' : 'Unmute Audio'}
           </button>
         </div>
       </div>
 
-      {/* MULTI-DOCUMENT MANAGEMENT DRAWER / TABS BAR */}
       <div className="glass-panel p-5 rounded-3xl border border-slate-800 space-y-4 bg-slate-900/40">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
           <div className="flex items-center space-x-2">
             <BookOpen className="w-4 h-4 text-cyan-400" />
             <h3 className="text-xs font-bold text-white uppercase tracking-widest">
-              Active PDF Coursework Library ({pdfDocuments.length} Documents)
+              Indexed PDF Library ({pdfDocuments.length} Documents)
             </h3>
           </div>
 
@@ -455,12 +434,11 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
           )}
         </div>
 
-        {/* Documents Cards Grid */}
         {pdfDocuments.length === 0 ? (
           <div className="py-8 text-center space-y-2">
             <FileText className="w-8 h-8 text-slate-600 mx-auto" />
-            <p className="text-xs text-slate-400 font-medium">No PDF documents uploaded yet.</p>
-            <p className="text-[11px] text-slate-500">Upload lecture PDFs or click "Add Sample PDF" above to test multi-document RAG synthesis.</p>
+            <p className="text-xs text-slate-400 font-medium">No PDF documents indexed yet.</p>
+            <p className="text-[11px] text-slate-500">Upload lecture PDFs to build the FAISS knowledge base on the AI Tutor service.</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -494,7 +472,7 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
                           {doc.name}
                         </p>
                         <p className="text-[10px] text-slate-400 font-mono">
-                          {doc.pages} Pages • {doc.size}
+                          {doc.pages} Pages · {doc.size}
                         </p>
                       </div>
                     </div>
@@ -503,7 +481,7 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
                       type="button"
                       onClick={() => removeDocument(doc.id)}
                       className="p-1 hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 rounded-lg transition-colors shrink-0"
-                      title="Remove PDF"
+                      title="Remove from UI (server index keeps chunks until Clear All)"
                     >
                       <X className="w-3.5 h-3.5" />
                     </button>
@@ -511,7 +489,7 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
 
                   <div className="flex items-center justify-between pt-2 border-t border-slate-800/60 text-[10px] font-mono">
                     <span className={isActive ? 'text-cyan-400 font-bold' : 'text-slate-500'}>
-                      {isActive ? '● Included in RAG Prompt' : '○ Excluded'}
+                      {isActive ? '● Included in retrieval' : '○ Excluded'}
                     </span>
                     <button
                       type="button"
@@ -519,7 +497,7 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
                       className="flex items-center space-x-1 text-slate-400 hover:text-white transition-colors"
                     >
                       <Eye className="w-3 h-3 text-cyan-400" />
-                      <span>Inspect Vector Text</span>
+                      <span>Details</span>
                     </button>
                   </div>
                 </div>
@@ -529,37 +507,34 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
         )}
       </div>
 
-      {/* QUICK MULTI-DOC RAG SYNTHESIS PROMPTS */}
       <div className="flex items-center space-x-2 overflow-x-auto pb-1 scrollbar-none">
         <span className="text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest shrink-0 flex items-center gap-1">
           <Compass className="w-3.5 h-3.5 text-cyan-400" />
-          Cross-Doc Queries:
+          Quick queries:
         </span>
         <button
-          onClick={() => handleSendMessage(undefined, "Compare and synthesize the key concepts between my active uploaded PDF documents.")}
+          onClick={() => handleSendMessage(undefined, "Summarize the key concepts from my uploaded PDF documents.")}
           className="px-3 py-1.5 rounded-full bg-slate-900 border border-slate-800 hover:border-cyan-400/40 text-slate-300 hover:text-white text-[11px] font-medium shrink-0 transition-all"
         >
-          🔄 Synthesize Key Overlap
+          Summarize Key Concepts
         </button>
         <button
-          onClick={() => handleSendMessage(undefined, "Generate 5 comprehensive exam review questions based on all active course documents.")}
+          onClick={() => handleSendMessage(undefined, "Generate 5 exam review questions based on my uploaded course documents.")}
           className="px-3 py-1.5 rounded-full bg-slate-900 border border-slate-800 hover:border-cyan-400/40 text-slate-300 hover:text-white text-[11px] font-medium shrink-0 transition-all"
         >
-          📝 Multi-Doc Exam Prep Questions
+          Exam Prep Questions
         </button>
         <button
-          onClick={() => handleSendMessage(undefined, "Summarize formulas and core definitions across my active PDFs, citing each document title.")}
+          onClick={() => handleSendMessage(undefined, "Extract important formulas and definitions from my documents, citing pages.")}
           className="px-3 py-1.5 rounded-full bg-slate-900 border border-slate-800 hover:border-cyan-400/40 text-slate-300 hover:text-white text-[11px] font-medium shrink-0 transition-all"
         >
-          📐 Extract Formulas & Cites
+          Formulas & Citations
         </button>
       </div>
 
-      {/* Hearing / Soundwave Voice Visualizer Banner */}
       {(isListening || isLoading || isSpeaking) && (
         <div className="bg-[#221f1c] border border-[#524639]/60 rounded-2xl p-4 flex items-center justify-between shadow-xl animate-in fade-in slide-in-from-bottom-2">
           <div className="flex items-center space-x-4">
-            {/* Animated Audio Equalizer Soundwave Bar Grid */}
             <div className="flex items-center space-x-1.5 h-10 px-3 bg-[#171614] rounded-xl border border-[#524639]/60">
               <span className="w-1 bg-[#e0d7d0] rounded-full animate-soundwave" style={{ animationDelay: '0.05s', height: '80%' }}></span>
               <span className="w-1 bg-[#998f86] rounded-full animate-soundwave" style={{ animationDelay: '0.2s', height: '100%' }}></span>
@@ -577,11 +552,11 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
                 {isListening 
                   ? 'Listening & Analyzing Voice Input...' 
                   : isLoading 
-                  ? 'Synthesizing response across PDF vector chunks...' 
+                  ? 'Retrieving chunks from FAISS and generating answer...' 
                   : 'Speaking response...'}
               </p>
               <p className="text-[10px] text-[#998f86] font-mono mt-0.5">
-                {isListening ? 'Speak clearly into your microphone — AI is hearing you...' : 'Professor Cybera Audio Synthesizer Active'}
+                {isListening ? 'Speak clearly into your microphone' : 'Professor Cybera · Groq RAG'}
               </p>
             </div>
           </div>
@@ -592,10 +567,8 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
         </div>
       )}
 
-      {/* Main Chat Thread Container */}
       <div className="bg-[#221f1c] rounded-3xl border border-[#524639]/50 shadow-2xl overflow-hidden flex flex-col h-[520px]">
         
-        {/* Chat Messages Log */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-[#171614]/50">
           {messages.map((msg) => {
             const isAI = msg.sender === 'ai';
@@ -604,7 +577,6 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
                 key={msg.id}
                 className={`flex items-start space-x-3.5 ${isAI ? '' : 'flex-row-reverse space-x-reverse'}`}
               >
-                {/* Avatar Icon */}
                 <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 border ${
                   isAI 
                     ? 'bg-[#2a2622] border-[#807368]/60 text-[#e0d7d0] shadow-md' 
@@ -613,7 +585,6 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
                   {isAI ? <Bot className="w-5 h-5 text-[#e0d7d0]" /> : <User className="w-5 h-5" />}
                 </div>
 
-                {/* Message Bubble */}
                 <div className={`max-w-2xl rounded-2xl p-5 border text-xs sm:text-sm leading-relaxed space-y-2.5 ${
                   isAI
                     ? 'bg-[#221f1c] border-[#524639]/60 text-[#e0d7d0] shadow-xl'
@@ -628,7 +599,6 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
                     </span>
                   </div>
 
-                  {/* Active Document Sources Cited */}
                   {msg.pdfSources && msg.pdfSources.length > 0 && (
                     <div className="flex flex-wrap items-center gap-1.5 pt-1">
                       <span className="text-[10px] font-mono uppercase text-[#998f86] font-bold">Cited Docs ({msg.pdfSources.length}):</span>
@@ -681,12 +651,11 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
             );
           })}
 
-          {/* Loading Indicator */}
           {isLoading && (
             <div className="flex items-center space-x-3 p-4 rounded-2xl bg-[#221f1c] border border-[#524639]/60 w-fit">
               <Bot className="w-5 h-5 text-[#e0d7d0] animate-spin" />
               <span className="text-xs font-mono text-[#e0d7d0]">
-                Synthesizing query across {activeDocCount} active PDF course documents...
+                Retrieving from {activeDocCount || 'general'} active PDF{activeDocCount === 1 ? '' : 's'}...
               </span>
             </div>
           )}
@@ -694,10 +663,8 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input Controls Bar */}
         <form onSubmit={handleSendMessage} className="p-4 bg-[#181614] border-t border-[#524639]/50 flex items-center space-x-3">
           
-          {/* Microphone Voice Toggle */}
           <button
             type="button"
             onClick={toggleListening}
@@ -711,7 +678,6 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
             {isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
           </button>
 
-          {/* Text Query Input */}
           <input
             type="text"
             value={inputQuery}
@@ -719,12 +685,13 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
             placeholder={
               isListening
                 ? 'Hearing your speech input...'
-                : `Ask Professor Cybera across your ${activeDocCount} active PDF documents...`
+                : activeDocCount > 0
+                  ? `Ask across your ${activeDocCount} active PDF document${activeDocCount === 1 ? '' : 's'}...`
+                  : 'Ask Professor Cybera (upload PDFs for document-grounded answers)...'
             }
             className="flex-1 bg-[#221f1c] border border-[#524639]/60 rounded-2xl px-4 py-3 text-xs sm:text-sm text-[#e0d7d0] placeholder-[#998f86] focus:outline-none focus:border-[#807368] font-medium"
           />
 
-          {/* Send Button */}
           <button
             type="submit"
             disabled={!inputQuery.trim() || isLoading}
@@ -735,7 +702,6 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
         </form>
       </div>
 
-      {/* INSPECT DOCUMENT PREVIEW MODAL */}
       {previewingDoc && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in">
           <div className="glass-card max-w-2xl w-full p-6 rounded-3xl border border-slate-800 space-y-4 max-h-[85vh] flex flex-col shadow-2xl">
@@ -745,7 +711,7 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
                 <div>
                   <h3 className="text-sm font-bold text-white font-mono">{previewingDoc.name}</h3>
                   <p className="text-[10px] text-slate-400 font-mono">
-                    {previewingDoc.pages} Pages • {previewingDoc.size} • Uploaded {previewingDoc.uploadedAt}
+                    {previewingDoc.pages} Pages · {previewingDoc.size} · Uploaded {previewingDoc.uploadedAt}
                   </p>
                 </div>
               </div>
@@ -764,14 +730,14 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
             <div className="flex items-center justify-between pt-2 text-xs">
               <span className="text-[11px] text-slate-400 font-mono">
                 Status: <strong className={previewingDoc.isActive !== false ? "text-cyan-400" : "text-rose-400"}>
-                  {previewingDoc.isActive !== false ? "Active for Multi-RAG" : "Inactive"}
+                  {previewingDoc.isActive !== false ? "Active for RAG retrieval" : "Inactive"}
                 </strong>
               </span>
               <button
                 onClick={() => setPreviewingDoc(null)}
                 className="px-5 py-2 rounded-full bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs transition-colors"
               >
-                Close Preview
+                Close
               </button>
             </div>
           </div>
