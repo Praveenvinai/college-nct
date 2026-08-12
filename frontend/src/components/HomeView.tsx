@@ -2,7 +2,6 @@ import React from 'react';
 import { 
   Sparkles, 
   ShoppingBag, 
-  ShieldCheck, 
   Award, 
   BookOpen, 
   Clock, 
@@ -12,7 +11,7 @@ import {
   Layers,
   ArrowRight
 } from 'lucide-react';
-import { Student, Announcement, PurchaseRecord } from '../types';
+import { Student, Announcement, PurchaseRecord, AttendanceLog, LogLoadStatus } from '../types';
 import { NationalCollegeLogo } from './NationalCollegeLogo';
 import { CAMPUS_AERIAL_GATE_URL, CAMPUS_AUTONOMOUS_GATE_URL } from '../assets/collegeAssets';
 
@@ -22,6 +21,9 @@ interface HomeViewProps {
   recentPurchases: PurchaseRecord[];
   onNavigate: (tab: string) => void;
   onOpenFaceAuth: () => void;
+  attendanceCount: number;
+  attendanceEntries: AttendanceLog[];
+  attendanceStatus: LogLoadStatus;
 }
 
 export const HomeView: React.FC<HomeViewProps> = ({
@@ -29,8 +31,12 @@ export const HomeView: React.FC<HomeViewProps> = ({
   announcements,
   recentPurchases,
   onNavigate,
-  onOpenFaceAuth
+  attendanceCount,
+  attendanceEntries,
+  attendanceStatus,
 }) => {
+  const latestAttendance = attendanceEntries[0];
+
   return (
     <div className="space-y-8">
       
@@ -97,21 +103,50 @@ export const HomeView: React.FC<HomeViewProps> = ({
       {/* Student Metrics Snapshot Grid - NO GPA, NO NFC WALLET */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
         
-        {/* Attendance Metric */}
+        {/* Face Check-ins (event count from live attendance_log) */}
         <div className="bg-[#221f1c] p-6 rounded-3xl border border-[#524639]/40 hover:border-[#807368]/60 transition-all duration-300 group shadow-lg">
           <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-bold text-[#998f86] uppercase tracking-wider">VERIFIED ATTENDANCE</span>
+            <span className="text-xs font-bold text-[#998f86] uppercase tracking-wider">FACE CHECK-INS</span>
             <div className="p-2 rounded-xl bg-[#383129] border border-[#524639]/60 text-[#e0d7d0] group-hover:scale-110 transition-transform">
               <Activity className="w-4 h-4" />
             </div>
           </div>
-          <div className="flex items-baseline space-x-2">
-            <span className="text-3xl font-black text-[#e0d7d0] font-['Outfit']">{student.attendance}%</span>
-            <span className="text-xs text-emerald-400 font-bold font-mono">Verified</span>
-          </div>
-          <p className="text-[11px] text-[#998f86] mt-2 flex items-center gap-1">
-            <CheckCircle className="w-3 h-3 text-emerald-400" /> Facial Biometrics Auto-Logged
-          </p>
+          {attendanceStatus === 'loading' || attendanceStatus === 'idle' ? (
+            <>
+              <div className="flex items-baseline space-x-2">
+                <span className="text-lg font-bold text-[#998f86] font-['Outfit']">Loading…</span>
+              </div>
+              <p className="text-[11px] text-[#998f86] mt-2">Fetching attendance events</p>
+            </>
+          ) : attendanceStatus === 'error' ? (
+            <>
+              <div className="flex items-baseline space-x-2">
+                <span className="text-sm font-bold text-[#c7b8ac] font-['Outfit']">Unavailable</span>
+              </div>
+              <p className="text-[11px] text-[#998f86] mt-2">Attendance data unavailable</p>
+            </>
+          ) : attendanceStatus === 'empty' ? (
+            <>
+              <div className="flex items-baseline space-x-2">
+                <span className="text-3xl font-black text-[#e0d7d0] font-['Outfit']">—</span>
+                <span className="text-xs text-[#c7b8ac] font-bold font-mono">Events</span>
+              </div>
+              <p className="text-[11px] text-[#998f86] mt-2">No attendance activity yet</p>
+            </>
+          ) : (
+            <>
+              <div className="flex items-baseline space-x-2">
+                <span className="text-3xl font-black text-[#e0d7d0] font-['Outfit']">{attendanceCount}</span>
+                <span className="text-xs text-emerald-400 font-bold font-mono">Events</span>
+              </div>
+              <p className="text-[11px] text-[#998f86] mt-2 flex items-center gap-1">
+                <CheckCircle className="w-3 h-3 text-emerald-400" />
+                {latestAttendance?.timestamp
+                  ? `Latest: ${latestAttendance.timestamp}`
+                  : 'Facial biometrics auto-logged'}
+              </p>
+            </>
+          )}
         </div>
 
         {/* Active Enrolled Modules */}
@@ -270,4 +305,3 @@ export const HomeView: React.FC<HomeViewProps> = ({
     </div>
   );
 };
-

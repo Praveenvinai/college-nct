@@ -15,7 +15,7 @@ import {
   ChevronRight,
   Sparkle
 } from 'lucide-react';
-import { Student, Announcement } from '../types';
+import { Student, Announcement, LogLoadStatus } from '../types';
 import { NationalCollegeLogo } from './NationalCollegeLogo';
 
 interface LeftDashboardProps {
@@ -26,6 +26,8 @@ interface LeftDashboardProps {
   setActiveTab: (tab: string) => void;
   announcements: Announcement[];
   onSignOut: () => void;
+  attendanceCount: number;
+  attendanceStatus: LogLoadStatus;
 }
 
 export const LeftDashboard: React.FC<LeftDashboardProps> = ({
@@ -35,7 +37,9 @@ export const LeftDashboard: React.FC<LeftDashboardProps> = ({
   activeTab,
   setActiveTab,
   announcements,
-  onSignOut
+  onSignOut,
+  attendanceCount,
+  attendanceStatus,
 }) => {
   const menuItems = [
     { id: 'home', label: 'Home Dashboard', icon: Home, badge: 'Overview' },
@@ -116,15 +120,23 @@ export const LeftDashboard: React.FC<LeftDashboardProps> = ({
                     </div>
                   </div>
 
-                  {/* Attendance Stat Strip (No GPA) */}
+                  {/* Face check-ins strip (event count — not a percentage) */}
                   <div className="mt-4 grid grid-cols-2 gap-2 text-center">
                     <div className="p-2.5 rounded-xl bg-[#282420] border border-[#524639]/40">
                       <span className="text-[10px] uppercase tracking-wider text-[#998f86] font-bold block">
-                        Attendance
+                        Face Check-ins
                       </span>
-                      <span className="text-sm font-extrabold text-[#e0d7d0] font-mono">
-                        {student.attendance}%
-                      </span>
+                      {attendanceStatus === 'loading' || attendanceStatus === 'idle' ? (
+                        <span className="text-xs font-bold text-[#998f86]">Loading…</span>
+                      ) : attendanceStatus === 'error' ? (
+                        <span className="text-[10px] font-bold text-[#c7b8ac]">Unavailable</span>
+                      ) : attendanceStatus === 'empty' ? (
+                        <span className="text-[10px] font-bold text-[#998f86]">No activity yet</span>
+                      ) : (
+                        <span className="text-sm font-extrabold text-[#e0d7d0] font-mono">
+                          {attendanceCount}
+                        </span>
+                      )}
                     </div>
                     <div className="p-2.5 rounded-xl bg-[#282420] border border-[#524639]/40">
                       <span className="text-[10px] uppercase tracking-wider text-[#998f86] font-bold block">

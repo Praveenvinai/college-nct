@@ -15,6 +15,43 @@ export interface Student {
   achievements: string[];
 }
 
+/** Face attendance event from Express → Flask → Firebase attendance_log */
+export interface AttendanceLog {
+  id: string;
+  student_id: string;
+  student_name: string;
+  department: string;
+  confidence: number;
+  timestamp: string;
+  source: string;
+}
+
+/** RFID gate event from Express → Flask → Firebase gate_log */
+export interface GateLog {
+  id: string;
+  student_id: string;
+  student_name: string;
+  department: string;
+  card_uid: string;
+  timestamp: string;
+  gate_status: string;
+  source: string;
+}
+
+export interface AttendanceListResponse {
+  count: number;
+  entries: AttendanceLog[];
+  student_id?: string;
+}
+
+export interface GateListResponse {
+  count: number;
+  entries: GateLog[];
+  student_id?: string;
+}
+
+export type LogLoadStatus = 'idle' | 'loading' | 'ready' | 'empty' | 'error';
+
 export interface FaceRecognitionResult {
   success: boolean;
   student?: Student;

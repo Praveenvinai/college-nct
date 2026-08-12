@@ -50,6 +50,15 @@ export const FaceRecognitionModal: React.FC<FaceRecognitionModalProps> = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  // Keep preset aligned with live allStudents (e.g. MADHU/BALA after /api/students load)
+  useEffect(() => {
+    if (allStudents.length === 0) return;
+    const exists = allStudents.some((s) => s.id === selectedPresetId);
+    if (!exists) {
+      setSelectedPresetId(allStudents[0].id);
+    }
+  }, [allStudents, selectedPresetId]);
+
   // Start Camera Stream
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -79,42 +88,96 @@ export const FaceRecognitionModal: React.FC<FaceRecognitionModalProps> = ({
     };
   }, [isOpen, activeMode]);
 
-  // Trigger Face Scan Process
+  // Trigger Face Scan Process — calls live POST /api/face/verify (no browser face ML)
   const handleStartScan = () => {
     if (scanning) return;
     setScanning(true);
     setScanProgress(0);
     setVerifiedStudent(null);
+    setCameraError(null);
+
+    const studentId =
+      allStudents.find((s) => s.id === selectedPresetId)?.id ||
+      allStudents[0]?.id;
+
+    if (!studentId || typeof studentId !== 'string' || !studentId.trim()) {
+      setScanning(false);
+      setScanProgress(0);
+      setCameraError('Student record not found.');
+      return;
+    }
 
     const interval = setInterval(() => {
       setScanProgress((prev) => {
         if (prev >= 100) {
           clearInterval(interval);
-          setScanning(false);
-          
-          // Match selected preset student
-          const target = allStudents.find((s) => s.id === selectedPresetId) || allStudents[0];
-          setVerifiedStudent(target);
-
-          // Confetti celebratory burst
-          confetti({
-            particleCount: 70,
-            spread: 60,
-            origin: { y: 0.6 },
-            colors: ['#F59E0B', '#06B6D4', '#10B981']
-          });
-
-          // Timeout to authorize
-          setTimeout(() => {
-            onSuccessAuth(target);
-            onClose();
-          }, 1500);
-
           return 100;
         }
         return prev + 10;
       });
     }, 150);
+
+    window.setTimeout(() => {
+      clearInterval(interval);
+      setScanProgress(100);
+
+      void (async () => {
+        try {
+          const res = await fetch('/api/face/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ studentId }),
+          });
+
+          const data = await res.json().catch(() => null);
+          const student =
+            data && typeof data === 'object'
+              ? (data as { student?: Student }).student
+              : undefined;
+          const success =
+            data &&
+            typeof data === 'object' &&
+            (data as { success?: unknown }).success === true;
+          const idOk =
+            student &&
+            typeof student.id === 'string' &&
+            student.id.trim().length > 0;
+
+          if (!res.ok || !success || !idOk || !student) {
+            setScanning(false);
+            setVerifiedStudent(null);
+            const message =
+              data &&
+              typeof data === 'object' &&
+              typeof (data as { message?: unknown }).message === 'string'
+                ? (data as { message: string }).message
+                : 'Student record not found.';
+            setCameraError(message);
+            return;
+          }
+
+          setVerifiedStudent(student);
+          setScanning(false);
+
+          confetti({
+            particleCount: 70,
+            spread: 60,
+            origin: { y: 0.6 },
+            colors: ['#F59E0B', '#06B6D4', '#10B981'],
+          });
+
+          window.setTimeout(() => {
+            onSuccessAuth(student);
+            onClose();
+          }, 1500);
+        } catch (err) {
+          console.error('Face verify failed:', err);
+          setScanning(false);
+          setVerifiedStudent(null);
+          setCameraError('Student record not found.');
+        }
+      })();
+    }, 1650);
   };
 
   // Submit Enrollment
@@ -357,16 +420,25 @@ export const FaceRecognitionModal: React.FC<FaceRecognitionModalProps> = ({
                   </div>
                 </div>
               ) : (
-                <div className="flex items-center justify-between">
-                  <div className="text-xs text-slate-400 space-y-0.5">
-                    <p className="font-semibold text-slate-200">Position face inside reticle frame.</p>
-                    <p>Biometric vector verified against National College registry.</p>
+                <div className="flex items-center justify-between gap-4">
+                  <div className="text-xs text-slate-400 space-y-0.5 min-w-0">
+                    {cameraError ? (
+                      <p className="font-semibold text-rose-300 flex items-center gap-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                        {cameraError}
+                      </p>
+                    ) : (
+                      <>
+                        <p className="font-semibold text-slate-200">Position face inside reticle frame.</p>
+                        <p>Biometric vector verified against National College registry.</p>
+                      </>
+                    )}
                   </div>
 
                   <button
                     onClick={handleStartScan}
                     disabled={scanning}
-                    className="px-6 py-3 rounded-2xl bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 text-slate-950 font-bold text-sm shadow-xl hover:shadow-amber-500/30 transition-all duration-300 glow-gold hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 flex items-center space-x-2"
+                    className="px-6 py-3 rounded-2xl bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 text-slate-950 font-bold text-sm shadow-xl hover:shadow-amber-500/30 transition-all duration-300 glow-gold hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 flex items-center space-x-2 shrink-0"
                   >
                     {scanning ? (
                       <>

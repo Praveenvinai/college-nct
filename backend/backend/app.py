@@ -11,6 +11,8 @@ from routes.rfid import rfid_bp
 from routes.store import store_bp
 from routes.classroom import classroom_bp
 from routes.students import students_bp
+from routes.attendance import attendance_bp
+from routes.gate_logs import gate_logs_bp
 
 app = Flask(__name__)
 CORS(app)
@@ -19,6 +21,8 @@ app.register_blueprint(rfid_bp, url_prefix="/api/rfid")
 app.register_blueprint(store_bp, url_prefix="/api/store")
 app.register_blueprint(classroom_bp, url_prefix="/api/classroom")
 app.register_blueprint(students_bp, url_prefix="/api/students")
+app.register_blueprint(attendance_bp, url_prefix="/api/attendance")
+app.register_blueprint(gate_logs_bp, url_prefix="/api/gate-logs")
 
 
 @app.get("/api/health")

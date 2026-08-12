@@ -42,6 +42,85 @@ def list_students() -> list[dict]:
     return result
 
 
+def list_attendance_logs(student_id: str | None = None) -> list[dict]:
+    """Return attendance_log entries (read-only), newest timestamp first."""
+    raw = get_ref("attendance_log").get() or {}
+    if not isinstance(raw, dict):
+        return []
+
+    entries: list[dict] = []
+    for push_id, record in raw.items():
+        if not isinstance(record, dict):
+            continue
+        sid = record.get("student_id", "")
+        if student_id is not None and sid != student_id:
+            continue
+        entries.append(
+            {
+                "id": push_id,
+                "student_id": sid if isinstance(sid, str) else "",
+                "student_name": record.get("student_name", "")
+                if isinstance(record.get("student_name"), str)
+                else "",
+                "department": record.get("department", "")
+                if isinstance(record.get("department"), str)
+                else "",
+                "confidence": record.get("confidence", 0),
+                "timestamp": record.get("timestamp", "")
+                if isinstance(record.get("timestamp"), str)
+                else "",
+                "source": record.get("source", "")
+                if isinstance(record.get("source"), str)
+                else "",
+            }
+        )
+
+    entries.sort(key=lambda e: e.get("timestamp") or "", reverse=True)
+    return entries
+
+
+def list_gate_logs(student_id: str | None = None) -> list[dict]:
+    """Return gate_log entries (read-only), newest timestamp first."""
+    raw = get_ref("gate_log").get() or {}
+    if not isinstance(raw, dict):
+        return []
+
+    entries: list[dict] = []
+    for push_id, record in raw.items():
+        if not isinstance(record, dict):
+            continue
+        sid = record.get("student_id", "")
+        if student_id is not None and sid != student_id:
+            continue
+        entries.append(
+            {
+                "id": push_id,
+                "student_id": sid if isinstance(sid, str) else "",
+                "student_name": record.get("student_name", "")
+                if isinstance(record.get("student_name"), str)
+                else "",
+                "department": record.get("department", "")
+                if isinstance(record.get("department"), str)
+                else "",
+                "card_uid": record.get("card_uid", "")
+                if isinstance(record.get("card_uid"), str)
+                else "",
+                "timestamp": record.get("timestamp", "")
+                if isinstance(record.get("timestamp"), str)
+                else "",
+                "gate_status": record.get("gate_status", "")
+                if isinstance(record.get("gate_status"), str)
+                else "",
+                "source": record.get("source", "")
+                if isinstance(record.get("source"), str)
+                else "",
+            }
+        )
+
+    entries.sort(key=lambda e: e.get("timestamp") or "", reverse=True)
+    return entries
+
+
 def log_face_attendance(student_id: str, confidence: float) -> dict:
     """Verify student exists and push a face-recognition attendance record."""
     student = get_student(student_id)

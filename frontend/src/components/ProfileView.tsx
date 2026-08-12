@@ -1,36 +1,51 @@
 import React from 'react';
 import { 
-  User, 
   ShieldCheck, 
   Award, 
   BookOpen, 
-  Wallet, 
   Mail, 
-  Hash, 
-  Building, 
-  Calendar, 
   Key, 
   Download, 
   Scan, 
   CheckCircle2,
   Sparkles,
-  ShoppingBag
+  ShoppingBag,
+  Activity,
+  DoorOpen,
+  Clock
 } from 'lucide-react';
-import { Student, PurchaseRecord } from '../types';
+import {
+  Student,
+  PurchaseRecord,
+  AttendanceLog,
+  GateLog,
+  LogLoadStatus,
+} from '../types';
 
 interface ProfileViewProps {
   student: Student;
   purchases: PurchaseRecord[];
   onOpenFaceAuth: () => void;
+  attendanceCount: number;
+  attendanceEntries: AttendanceLog[];
+  attendanceStatus: LogLoadStatus;
+  gateCount: number;
+  gateEntries: GateLog[];
+  gateStatus: LogLoadStatus;
 }
 
 export const ProfileView: React.FC<ProfileViewProps> = ({
   student,
   purchases,
-  onOpenFaceAuth
+  onOpenFaceAuth,
+  attendanceCount,
+  attendanceEntries,
+  attendanceStatus,
+  gateCount,
+  gateEntries,
+  gateStatus,
 }) => {
   const studentPurchases = purchases.filter((p) => p.studentId === student.id);
-  const totalSpent = studentPurchases.reduce((acc, p) => acc + p.price, 0);
 
   const handleDownloadID = () => {
     alert(`[National College Digital ID Card]\nStudent: ${student.name}\nID: ${student.id}\nRoll: ${student.rollNumber}\nDepartment: ${student.department}\nBiometric Signature: Encrypted & Verified`);
@@ -98,6 +113,98 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               <span>Re-Scan Biometric Face</span>
             </button>
           </div>
+        </div>
+      </div>
+
+      {/* Live campus activity (Express → Flask → Firebase) */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-[#221f1c] p-6 rounded-3xl border border-[#524639]/40 space-y-4 shadow-lg">
+          <h3 className="text-base font-bold text-[#e0d7d0] font-serif italic flex items-center gap-2">
+            <Activity className="w-5 h-5 text-[#998f86]" />
+            Attendance Activity
+          </h3>
+
+          {attendanceStatus === 'loading' || attendanceStatus === 'idle' ? (
+            <p className="text-xs text-[#998f86]">Loading attendance…</p>
+          ) : attendanceStatus === 'error' ? (
+            <p className="text-xs text-[#c7b8ac]">Attendance data unavailable</p>
+          ) : attendanceStatus === 'empty' ? (
+            <p className="text-xs text-[#998f86]">No attendance activity yet</p>
+          ) : (
+            <>
+              <p className="text-xs text-[#998f86]">
+                Total face check-ins:{' '}
+                <span className="font-mono font-bold text-[#e0d7d0]">{attendanceCount}</span>
+              </p>
+              <div className="space-y-2">
+                {attendanceEntries.slice(0, 5).map((entry) => (
+                  <div
+                    key={entry.id}
+                    className="p-3 rounded-2xl bg-[#171614] border border-[#524639]/30 flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-xs font-mono text-[#e0d7d0] flex items-center gap-1.5 truncate">
+                        <Clock className="w-3 h-3 text-[#998f86] shrink-0" />
+                        {entry.timestamp}
+                      </p>
+                      <p className="text-[10px] text-[#998f86] mt-0.5">
+                        Confidence:{' '}
+                        {typeof entry.confidence === 'number'
+                          ? entry.confidence.toFixed(2)
+                          : '—'}
+                      </p>
+                    </div>
+                    <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-[#383129] text-[#e0d7d0] border border-[#524639]/40 shrink-0">
+                      Face
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="bg-[#221f1c] p-6 rounded-3xl border border-[#524639]/40 space-y-4 shadow-lg">
+          <h3 className="text-base font-bold text-[#e0d7d0] font-serif italic flex items-center gap-2">
+            <DoorOpen className="w-5 h-5 text-[#998f86]" />
+            Gate Activity
+          </h3>
+
+          {gateStatus === 'loading' || gateStatus === 'idle' ? (
+            <p className="text-xs text-[#998f86]">Loading gate activity…</p>
+          ) : gateStatus === 'error' ? (
+            <p className="text-xs text-[#c7b8ac]">Gate activity unavailable</p>
+          ) : gateStatus === 'empty' ? (
+            <p className="text-xs text-[#998f86]">No gate activity yet</p>
+          ) : (
+            <>
+              <p className="text-xs text-[#998f86]">
+                Total gate entries:{' '}
+                <span className="font-mono font-bold text-[#e0d7d0]">{gateCount}</span>
+              </p>
+              <div className="space-y-2">
+                {gateEntries.slice(0, 5).map((entry) => (
+                  <div
+                    key={entry.id}
+                    className="p-3 rounded-2xl bg-[#171614] border border-[#524639]/30 flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-xs font-mono text-[#e0d7d0] flex items-center gap-1.5 truncate">
+                        <Clock className="w-3 h-3 text-[#998f86] shrink-0" />
+                        {entry.timestamp}
+                      </p>
+                      <p className="text-[10px] text-[#998f86] mt-0.5 font-mono truncate">
+                        UID {entry.card_uid} · {entry.gate_status}
+                      </p>
+                    </div>
+                    <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-[#383129] text-[#e0d7d0] border border-[#524639]/40 shrink-0">
+                      RFID
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       </div>
 

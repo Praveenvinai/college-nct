@@ -10,7 +10,15 @@ import { ProfileView } from './components/ProfileView';
 import { ContactView } from './components/ContactView';
 import { FaceRecognitionModal } from './components/FaceRecognitionModal';
 import { INITIAL_STUDENTS, INITIAL_STORE_ITEMS, INITIAL_ANNOUNCEMENTS, INITIAL_PURCHASES } from './mockData';
-import { Student, StoreItem, Announcement, PurchaseRecord } from './types';
+import {
+  Student,
+  StoreItem,
+  Announcement,
+  PurchaseRecord,
+  AttendanceLog,
+  GateLog,
+  LogLoadStatus,
+} from './types';
 
 export default function App() {
   const [allStudents, setAllStudents] = useState<Student[]>(INITIAL_STUDENTS);
@@ -18,21 +26,49 @@ export default function App() {
   const [storeItems, setStoreItems] = useState<StoreItem[]>(INITIAL_STORE_ITEMS);
   const [announcements] = useState<Announcement[]>(INITIAL_ANNOUNCEMENTS);
   const [purchases, setPurchases] = useState<PurchaseRecord[]>(INITIAL_PURCHASES);
-  
+
   const [activeTab, setActiveTab] = useState<string>('home');
   const [isFaceAuthModalOpen, setIsFaceAuthModalOpen] = useState<boolean>(false);
   const [isLeftDashboardOpen, setIsLeftDashboardOpen] = useState<boolean>(false);
 
+  const [attendanceCount, setAttendanceCount] = useState(0);
+  const [attendanceEntries, setAttendanceEntries] = useState<AttendanceLog[]>([]);
+  const [attendanceStatus, setAttendanceStatus] = useState<LogLoadStatus>('idle');
+  const [gateCount, setGateCount] = useState(0);
+  const [gateEntries, setGateEntries] = useState<GateLog[]>([]);
+  const [gateStatus, setGateStatus] = useState<LogLoadStatus>('idle');
+
   // Fetch initial data from server if available
   useEffect(() => {
     fetch('/api/students')
-      .then((res) => res.json())
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error(`students HTTP ${res.status}`);
+        }
+        return res.json();
+      })
       .then((data) => {
-        if (data.students && Array.isArray(data.students)) {
-          setAllStudents(data.students);
+        if (
+          data.students &&
+          Array.isArray(data.students) &&
+          data.students.length > 0
+        ) {
+          const liveStudents = data.students as Student[];
+
+          setAllStudents(liveStudents);
+
+          setCurrentStudent((current: Student | null) => {
+            const currentExists = current
+              ? liveStudents.some((student) => student.id === current.id)
+              : false;
+
+            return currentExists ? current : liveStudents[0];
+          });
         }
       })
-      .catch((err) => console.log("Using seed student records:", err));
+      .catch((err) => {
+        console.log("Using seed student records:", err);
+      });
 
     fetch('/api/store/items')
       .then((res) => res.json())
@@ -43,6 +79,93 @@ export default function App() {
       })
       .catch((err) => console.log("Using seed store inventory:", err));
   }, []);
+
+  // Live attendance + gate logs for the current student (Express → Flask → Firebase)
+  useEffect(() => {
+    const studentId = currentStudent?.id;
+    if (!studentId) {
+      setAttendanceCount(0);
+      setAttendanceEntries([]);
+      setAttendanceStatus('idle');
+      setGateCount(0);
+      setGateEntries([]);
+      setGateStatus('idle');
+      return;
+    }
+
+    let cancelled = false;
+    setAttendanceStatus('loading');
+    setGateStatus('loading');
+
+    const attendanceUrl = `/api/attendance?student_id=${encodeURIComponent(studentId)}`;
+    const gateUrl = `/api/gate-logs?student_id=${encodeURIComponent(studentId)}`;
+
+    fetch(attendanceUrl)
+      .then((res) => {
+        if (!res.ok) throw new Error(`attendance HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((attData) => {
+        if (cancelled) return;
+        if (
+          !attData ||
+          typeof attData !== 'object' ||
+          !Array.isArray(attData.entries)
+        ) {
+          setAttendanceCount(0);
+          setAttendanceEntries([]);
+          setAttendanceStatus('error');
+          return;
+        }
+        const entries = attData.entries as AttendanceLog[];
+        const count =
+          typeof attData.count === 'number' ? attData.count : entries.length;
+        setAttendanceCount(count);
+        setAttendanceEntries(entries);
+        setAttendanceStatus(count === 0 ? 'empty' : 'ready');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAttendanceCount(0);
+        setAttendanceEntries([]);
+        setAttendanceStatus('error');
+      });
+
+    fetch(gateUrl)
+      .then((res) => {
+        if (!res.ok) throw new Error(`gate-logs HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((gateData) => {
+        if (cancelled) return;
+        if (
+          !gateData ||
+          typeof gateData !== 'object' ||
+          !Array.isArray(gateData.entries)
+        ) {
+          setGateCount(0);
+          setGateEntries([]);
+          setGateStatus('error');
+          return;
+        }
+        const entries = gateData.entries as GateLog[];
+        const count =
+          typeof gateData.count === 'number' ? gateData.count : entries.length;
+        setGateCount(count);
+        setGateEntries(entries);
+        setGateStatus(count === 0 ? 'empty' : 'ready');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setGateCount(0);
+        setGateEntries([]);
+        setGateStatus('error');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentStudent?.id]);
 
   // Handle Face Recognition Authentication Success
   const handleFaceAuthSuccess = (student: Student) => {
@@ -91,6 +214,8 @@ export default function App() {
         setActiveTab={setActiveTab}
         announcements={announcements}
         onSignOut={handleSignOut}
+        attendanceCount={attendanceCount}
+        attendanceStatus={attendanceStatus}
       />
 
       {/* Main Content View Container with Smooth Tab Transitions */}
@@ -111,6 +236,9 @@ export default function App() {
                   recentPurchases={purchases.filter((p) => p.studentId === currentStudent.id)}
                   onNavigate={setActiveTab}
                   onOpenFaceAuth={() => setIsFaceAuthModalOpen(true)}
+                  attendanceCount={attendanceCount}
+                  attendanceEntries={attendanceEntries}
+                  attendanceStatus={attendanceStatus}
                 />
               )}
 
@@ -132,6 +260,12 @@ export default function App() {
                   student={currentStudent}
                   purchases={purchases}
                   onOpenFaceAuth={() => setIsFaceAuthModalOpen(true)}
+                  attendanceCount={attendanceCount}
+                  attendanceEntries={attendanceEntries}
+                  attendanceStatus={attendanceStatus}
+                  gateCount={gateCount}
+                  gateEntries={gateEntries}
+                  gateStatus={gateStatus}
                 />
               )}
 

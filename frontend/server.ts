@@ -18,6 +18,126 @@ const BACKEND_URL = (
   process.env.BACKEND_URL || "https://college-nct-backend.onrender.com"
 ).replace(/\/$/, "");
 
+function parseOptionalStudentId(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/** Map one Flask/Firebase student row into the portal Student shape. */
+function mapLiveBackendStudent(row: Record<string, unknown>): Student | null {
+  const studentId =
+    typeof row.student_id === "string" ? row.student_id.trim() : "";
+  const name = typeof row.name === "string" ? row.name : "";
+  const department = typeof row.department === "string" ? row.department : "";
+  if (!studentId) return null;
+
+  return {
+    id: studentId,
+    name,
+    rollNumber: studentId,
+    department,
+    year: "",
+    gpa: 0,
+    attendance: 0,
+    walletBalance: 0,
+    photoUrl: "",
+    faceEmbeddingHash: "",
+    email: "",
+    bio: "",
+    enrolledCourses: [],
+    achievements: [],
+  };
+}
+
+/**
+ * Fetch live students from Flask.
+ * Returns null when the backend is unreachable / invalid (caller may fall back).
+ * Returns [] when the backend responds but has no mappable students.
+ */
+async function fetchLiveStudents(): Promise<Student[] | null> {
+  try {
+    const upstream = await fetch(`${BACKEND_URL}/api/students`, {
+      method: "GET",
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!upstream.ok) return null;
+
+    const data = await upstream.json().catch(() => null);
+    if (
+      !data ||
+      typeof data !== "object" ||
+      !Array.isArray((data as { students?: unknown }).students)
+    ) {
+      return null;
+    }
+
+    const mapped: Student[] = [];
+    for (const row of (data as { students: unknown[] }).students) {
+      if (!row || typeof row !== "object") continue;
+      const student = mapLiveBackendStudent(row as Record<string, unknown>);
+      if (student) mapped.push(student);
+    }
+    return mapped;
+  } catch {
+    return null;
+  }
+}
+
+async function proxyLogList(
+  res: express.Response,
+  apiPath: "/api/attendance" | "/api/gate-logs",
+  studentId: string | undefined
+) {
+  const empty: Record<string, unknown> = {
+    count: 0,
+    entries: [],
+  };
+  if (studentId) {
+    empty.student_id = studentId;
+  }
+
+  try {
+    const url = new URL(`${BACKEND_URL}${apiPath}`);
+    if (studentId) {
+      url.searchParams.set("student_id", studentId);
+    }
+
+    const upstream = await fetch(url.toString(), {
+      method: "GET",
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!upstream.ok) {
+      return res.json(empty);
+    }
+
+    const data = await upstream.json().catch(() => null);
+    if (
+      !data ||
+      typeof data !== "object" ||
+      !Array.isArray((data as { entries?: unknown }).entries)
+    ) {
+      return res.json(empty);
+    }
+
+    const entries = (data as { entries: unknown[] }).entries;
+    const count =
+      typeof (data as { count?: unknown }).count === "number"
+        ? (data as { count: number }).count
+        : entries.length;
+
+    const payload: Record<string, unknown> = { count, entries };
+    if (studentId) {
+      payload.student_id = studentId;
+    } else if (typeof (data as { student_id?: unknown }).student_id === "string") {
+      payload.student_id = (data as { student_id: string }).student_id;
+    }
+    return res.json(payload);
+  } catch {
+    return res.json(empty);
+  }
+}
+
 // Gemini AI client (optional TTS / legacy fallback)
 const getGeminiClient = () => {
   return new GoogleGenAI({
@@ -75,25 +195,53 @@ async function startServer() {
     }
   });
 
-  // Get all registered students
-  app.get("/api/students", (_req, res) => {
-    res.json({ students: studentsDb });
+  // Get all registered students (live from Flask when available; mock fallback)
+  app.get("/api/students", async (_req, res) => {
+    const live = await fetchLiveStudents();
+    if (live && live.length > 0) {
+      return res.json({ students: live });
+    }
+    return res.json({ students: studentsDb });
   });
 
-  // Face Verification Endpoint
-  app.post("/api/face/verify", (req, res) => {
-    const { studentId, snapshotBase64, overrideMatch } = req.body;
+  // Read-only proxy: attendance_log via Flask backend
+  app.get("/api/attendance", async (req, res) => {
+    const studentId = parseOptionalStudentId(req.query.student_id);
+    return proxyLogList(res, "/api/attendance", studentId);
+  });
 
-    // Direct ID match or mock facial similarity computation
-    let matchedStudent = studentsDb.find((s) => s.id === studentId);
+  // Read-only proxy: gate_log via Flask backend
+  app.get("/api/gate-logs", async (req, res) => {
+    const studentId = parseOptionalStudentId(req.query.student_id);
+    return proxyLogList(res, "/api/gate-logs", studentId);
+  });
 
-    if (!matchedStudent && overrideMatch) {
-      matchedStudent = studentsDb[0]; // Fallback default scholar
-    }
+  // Face Verification Endpoint — resolves against LIVE Flask students (no image ML; no attendance write)
+  app.post("/api/face/verify", async (req, res) => {
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const rawStudentId = (body as { studentId?: unknown }).studentId;
+    const studentId =
+      typeof rawStudentId === "string" ? rawStudentId.trim() : "";
+    const snapshotBase64 = (body as { snapshotBase64?: unknown }).snapshotBase64;
+    const overrideMatch = (body as { overrideMatch?: unknown }).overrideMatch;
 
-    if (!matchedStudent && snapshotBase64) {
-      // Simulate real-time biometric vector embedding calculation
-      matchedStudent = studentsDb[0]; // Matches default primary enrolled student
+    const live = await fetchLiveStudents();
+    const liveAvailable = live !== null && live.length > 0;
+    const pool = liveAvailable ? live! : studentsDb;
+
+    let matchedStudent: Student | undefined;
+
+    if (studentId) {
+      matchedStudent = pool.find((s) => s.id === studentId);
+      if (!matchedStudent) {
+        return res.status(401).json({
+          success: false,
+          message: "Student record not found.",
+        });
+      }
+    } else if (overrideMatch || snapshotBase64) {
+      // Mock-path fallback: first LIVE student when backend is up; else in-memory seed
+      matchedStudent = pool[0];
     }
 
     if (matchedStudent) {
@@ -108,7 +256,7 @@ async function startServer() {
 
     return res.status(401).json({
       success: false,
-      message: "Face biometric signature not recognized in National College database.",
+      message: "Student record not found.",
     });
   });
 
