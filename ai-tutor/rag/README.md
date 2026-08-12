@@ -132,8 +132,33 @@ Example response (no document):
 | PDF parsing | PyMuPDF |
 | Config | python-dotenv |
 
+## Frontend integration (National College Portal)
+
+The React portal proxies through Express (`frontend/server.ts`) using `AI_TUTOR_URL` from `frontend/.env`:
+
+| Portal route | RAG service |
+|--------------|-------------|
+| `POST /api/tutor/upload` | `POST /upload` |
+| `POST /api/tutor/chat` | `POST /chat` (`prompt` → `question`, `answer` → `text`) |
+| `DELETE /api/tutor/docs` | `DELETE /knowledge-base` |
+
+Run both:
+
+```bash
+# Terminal 1 — RAG API
+cd ai-tutor/rag
+python rag.py
+
+# Terminal 2 — Portal
+cd frontend
+npm run dev
+```
+
+Then open [http://localhost:3000](http://localhost:3000) → AI Tutor tab. Upload PDFs there; they are indexed on this service.
+
 ## Notes
 
 - Only PDF uploads are supported.
+- Multiple PDFs append into one FAISS index (filter by `filenames` in `/chat`).
 - The in-memory vector store resets when the server restarts.
 - Keep your Groq API key in `.env` only — never commit it.

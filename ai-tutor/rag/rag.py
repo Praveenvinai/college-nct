@@ -1,5 +1,6 @@
 import os
 import tempfile
+from typing import Optional
 
 import pymupdf as fitz
 from fastapi import FastAPI, UploadFile, File
@@ -32,7 +33,7 @@ os.environ["GROQ_API_KEY"] = GROK_API_KEY
 
 app = FastAPI(
     title="User Document RAG API",
-    description="PDF based RAG system"
+    description="PDF based RAG system for National College AI Tutor",
 )
 
 
@@ -56,145 +57,149 @@ embedding_model = HuggingFaceEmbeddings(
 
 
 # ============================================================
-# 5. VECTOR STORE
+# 5. VECTOR STORE + DOC REGISTRY
 # ============================================================
 
-vectorstore = None
+vectorstore: Optional[FAISS] = None
+uploaded_docs: list[dict] = []
 
 
 # ============================================================
 # 6. PDF PROCESSING
 # ============================================================
 
-def extract_pdf(file_path):
-
+def extract_pdf(file_path: str, filename: str):
     pdf = fitz.open(file_path)
-
     documents = []
 
     for page_number, page in enumerate(pdf.pages(), start=1):
-
         text = page.get_text()
-
         if text.strip():
-
             documents.append(
                 Document(
                     page_content=text,
                     metadata={
-                        "page": page_number + 1
-                    }
+                        "page": page_number,
+                        "filename": filename,
+                    },
                 )
             )
 
     pdf.close()
-
     return documents
 
 
 # ============================================================
-# 7. CREATE KNOWLEDGE BASE
+# 7. CREATE / MERGE KNOWLEDGE BASE
 # ============================================================
 
-def create_knowledge_base(file_path):
-
+def add_to_knowledge_base(file_path: str, filename: str):
     global vectorstore
 
-    # Extract PDF
-    documents = extract_pdf(file_path)
+    documents = extract_pdf(file_path, filename)
 
-    # Split text
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=500,
-        chunk_overlap=100
+        chunk_overlap=100,
     )
+    chunks = splitter.split_documents(documents)
 
-    chunks = splitter.split_documents(
-        documents
-    )
-
-    # Create vector database
-    vectorstore = FAISS.from_documents(
-        chunks,
-        embedding_model
-    )
+    if vectorstore is None:
+        vectorstore = FAISS.from_documents(chunks, embedding_model)
+    else:
+        vectorstore.add_documents(chunks)
 
     return {
         "pages": len(documents),
-        "chunks": len(chunks)
+        "chunks": len(chunks),
     }
 
 
 # ============================================================
-# 8. UPLOAD ENDPOINT
+# 8. HEALTH + DOCS
+# ============================================================
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "documents": len(uploaded_docs),
+        "has_vectorstore": vectorstore is not None,
+    }
+
+
+@app.get("/documents")
+async def list_docs():
+    return {"documents": uploaded_docs}
+
+
+@app.delete("/knowledge-base")
+async def clear_docs():
+    global vectorstore, uploaded_docs
+    vectorstore = None
+    uploaded_docs = []
+    return {"message": "Knowledge base cleared.", "documents": []}
+
+
+# ============================================================
+# 9. UPLOAD ENDPOINT
 # ============================================================
 
 @app.post("/upload")
-async def upload_pdf(
-    file: UploadFile = File(...)
-):
-
-    global vectorstore
-
-    # Validate file
+async def upload_pdf(file: UploadFile = File(...)):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
+        return {"error": "Only PDF files are supported."}
 
-        return {
-            "error": "Only PDF files are supported."
-        }
-
-    # Read uploaded file
     file_bytes = await file.read()
 
-    # Temporary file
-    with tempfile.NamedTemporaryFile(
-        delete=False,
-        suffix=".pdf"
-    ) as temp_file:
-
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
         temp_file.write(file_bytes)
-
         temp_path = temp_file.name
 
     try:
-
-        result = create_knowledge_base(
-            temp_path
-        )
+        result = add_to_knowledge_base(temp_path, file.filename)
+        entry = {
+            "filename": file.filename,
+            "pages": result["pages"],
+            "chunks": result["chunks"],
+        }
+        uploaded_docs.append(entry)
 
         return {
             "message": "PDF uploaded successfully.",
             "filename": file.filename,
             "pages": result["pages"],
-            "chunks": result["chunks"]
+            "chunks": result["chunks"],
+            "documents": uploaded_docs,
         }
-
     finally:
-
         os.remove(temp_path)
 
 
 # ============================================================
-# 9. CHAT REQUEST
+# 10. CHAT REQUEST
 # ============================================================
 
 class ChatRequest(BaseModel):
-
     question: str
+    # Optional: filter retrieval to these filenames (active docs in UI)
+    filenames: Optional[list[str]] = None
 
 
 # ============================================================
-# 10. PROMPT
+# 11. PROMPT
 # ============================================================
 
 prompt = ChatPromptTemplate.from_template(
     """
-You are a helpful AI assistant.
+You are Professor Cybera, National College's AI Scholar Tutor.
+Explain academic concepts clearly with structure, examples, and citations.
 
 There may or may not be a document uploaded by the user.
 
 If document context is provided and the question is
-related to that document, answer using the context.
+related to that document, answer using the context and cite
+the source filename and page when possible.
 
 If the question is a general question unrelated to the
 document, answer using your general knowledge.
@@ -216,7 +221,7 @@ Answer:
 
 
 # ============================================================
-# 11. RAG CHAIN
+# 12. RAG CHAIN
 # ============================================================
 
 rag_chain = (
@@ -227,90 +232,77 @@ rag_chain = (
 
 
 # ============================================================
-# 12. CHAT ENDPOINT
+# 13. CHAT ENDPOINT
 # ============================================================
 
 @app.post("/chat")
-async def chat(
-    request: ChatRequest
-):
-
+async def chat(request: ChatRequest):
     global vectorstore
 
     question = request.question
 
-    # --------------------------------------------------------
-    # No document uploaded
-    # --------------------------------------------------------
-
     if vectorstore is None:
-
         answer = rag_chain.invoke(
             {
                 "context": "No document has been uploaded.",
-                "question": question
+                "question": question,
             }
         )
-
         return {
             "answer": answer,
-            "source": "general_knowledge"
+            "source": "general_knowledge",
+            "activeDocs": [],
         }
 
-
-    # --------------------------------------------------------
-    # Retrieve relevant documents
-    # --------------------------------------------------------
-
+    # Over-retrieve then filter by active filenames if provided
+    k = 8 if request.filenames else 4
     retriever = vectorstore.as_retriever(
         search_type="similarity",
-        search_kwargs={
-            "k": 4
-        }
+        search_kwargs={"k": k},
     )
+    retrieved_docs = retriever.invoke(question)
 
-    retrieved_docs = retriever.invoke(
-        question
-    )
-
-
-    # --------------------------------------------------------
-    # Create context
-    # --------------------------------------------------------
+    if request.filenames:
+        allowed = set(request.filenames)
+        filtered = [
+            doc for doc in retrieved_docs
+            if doc.metadata.get("filename") in allowed
+        ]
+        # Fall back to unfiltered if filter emptied results
+        retrieved_docs = filtered[:4] if filtered else retrieved_docs[:4]
+    else:
+        retrieved_docs = retrieved_docs[:4]
 
     context = "\n\n".join(
         [
-            f"[Page {doc.metadata.get('page')}]\n"
+            f"[Source: {doc.metadata.get('filename', 'document')} | Page {doc.metadata.get('page')}]\n"
             f"{doc.page_content}"
             for doc in retrieved_docs
         ]
     )
 
-
-    # --------------------------------------------------------
-    # Generate answer
-    # --------------------------------------------------------
-
     answer = rag_chain.invoke(
         {
             "context": context,
-            "question": question
+            "question": question,
         }
     )
 
-
-    # --------------------------------------------------------
-    # Return answer
-    # --------------------------------------------------------
+    cited = []
+    for doc in retrieved_docs:
+        name = doc.metadata.get("filename")
+        if name and name not in cited:
+            cited.append(name)
 
     return {
         "answer": answer,
         "source": "uploaded_document",
         "retrieved_pages": [
-            doc.metadata.get("page")
-            for doc in retrieved_docs
-        ]
+            doc.metadata.get("page") for doc in retrieved_docs
+        ],
+        "activeDocs": cited,
     }
+
 
 if __name__ == "__main__":
     import uvicorn
@@ -319,6 +311,5 @@ if __name__ == "__main__":
         "rag:app",
         host="127.0.0.1",
         port=8001,
-        reload=True
+        reload=True,
     )
-
