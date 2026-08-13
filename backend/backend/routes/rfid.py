@@ -29,6 +29,9 @@ def scan():
                     "status": "granted",
                     "student_id": result["student_id"],
                     "student_name": result["student_name"],
+                    "id": result["id"],
+                    "name": result["name"],
+                    "role": result["role"],
                     "action": "open_gate",
                 }
             ),
