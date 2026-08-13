@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from firebase_config import get_ref
 
 BROWSER_FACE_SOURCE = "browser_face"
 BROWSER_FACE_DUPLICATE_WINDOW_SECONDS = 60
+RFID_GATE_SOURCE = "rfid_gate"
 _TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+try:
+    _CAMPUS_TZ = ZoneInfo("Asia/Kolkata")
+except Exception:
+    _CAMPUS_TZ = timezone(timedelta(hours=5, minutes=30))
 _browser_attendance_lock = threading.Lock()
+_staff_attendance_lock = threading.Lock()
 
 
 class StudentNotFoundError(Exception):
@@ -267,6 +274,55 @@ def _department_for_role(role: str, person: dict) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _campus_date_key(dt: datetime) -> str:
+    """Calendar date in Asia/Kolkata (IST) for daily attendance uniqueness."""
+    return dt.astimezone(_CAMPUS_TZ).strftime("%Y-%m-%d")
+
+
+def log_staff_rfid_attendance(staff_id: str, staff_name: str, department: str) -> dict:
+    """
+    Write one attendance_log row for a granted staff RFID scan.
+
+    Reuses the existing attendance_log schema (student_id / student_name / ...).
+    Skips a second write if this staff member already has attendance today.
+    """
+    with _staff_attendance_lock:
+        now = datetime.now(timezone.utc)
+        today_key = _campus_date_key(now)
+        for entry in list_attendance_logs(staff_id):
+            stamped = _parse_attendance_timestamp(entry.get("timestamp") or "")
+            if stamped is None:
+                continue
+            if _campus_date_key(stamped) == today_key:
+                return {
+                    "student_id": staff_id,
+                    "student_name": staff_name,
+                    "recorded": False,
+                    "duplicate": True,
+                    "timestamp": entry.get("timestamp", ""),
+                    "source": RFID_GATE_SOURCE,
+                }
+
+        timestamp = now.strftime(_TIMESTAMP_FORMAT)
+        record = {
+            "student_id": staff_id,
+            "student_name": staff_name,
+            "department": department,
+            "confidence": 1.0,
+            "timestamp": timestamp,
+            "source": RFID_GATE_SOURCE,
+        }
+        get_ref("attendance_log").push(record)
+        return {
+            "student_id": staff_id,
+            "student_name": staff_name,
+            "recorded": True,
+            "duplicate": False,
+            "timestamp": timestamp,
+            "source": RFID_GATE_SOURCE,
+        }
+
+
 def log_rfid_gate_access(card_uid: str) -> dict:
     """Verify RFID card, push a gate_log entry, and return granted person info."""
     found = find_student_by_rfid(card_uid)
@@ -298,6 +354,9 @@ def log_rfid_gate_access(card_uid: str) -> dict:
     }
 
     get_ref("gate_log").push(record)
+
+    if role == "staff":
+        log_staff_rfid_attendance(person_id, person_name, department)
 
     return {
         "student_id": person_id,

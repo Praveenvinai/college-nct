@@ -21,6 +21,7 @@ import {
   GateLog,
   LogLoadStatus,
 } from '../types';
+import { formatIstDate, formatIstTime } from '../istTime';
 
 interface ProfileViewProps {
   student: Student;
@@ -88,6 +89,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               <p className="text-xs sm:text-sm text-[#998f86] font-medium">
                 {student.department} • <span className="text-[#e0d7d0]">{student.year}</span>
               </p>
+              <p className="text-xs sm:text-sm text-[#998f86] font-medium">
+                Role: <span className="text-[#e0d7d0]">Student</span>
+              </p>
 
               <p className="text-xs text-[#998f86] flex items-center gap-1 pt-1">
                 <Mail className="w-3.5 h-3.5 text-[#e0d7d0]" /> {student.email}
@@ -145,7 +149,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                     <div className="min-w-0">
                       <p className="text-xs font-mono text-[#e0d7d0] flex items-center gap-1.5 truncate">
                         <Clock className="w-3 h-3 text-[#998f86] shrink-0" />
-                        {entry.timestamp}
+                        {formatIstDate(entry.timestamp)} · {formatIstTime(entry.timestamp)} IST
                       </p>
                       <p className="text-[10px] text-[#998f86] mt-0.5">
                         Confidence:{' '}
@@ -191,7 +195,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                     <div className="min-w-0">
                       <p className="text-xs font-mono text-[#e0d7d0] flex items-center gap-1.5 truncate">
                         <Clock className="w-3 h-3 text-[#998f86] shrink-0" />
-                        {entry.timestamp}
+                        {formatIstDate(entry.timestamp)} · {formatIstTime(entry.timestamp)} IST
                       </p>
                       <p className="text-[10px] text-[#998f86] mt-0.5 font-mono truncate">
                         UID {entry.card_uid} · {entry.gate_status}

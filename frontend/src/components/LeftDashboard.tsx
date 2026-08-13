@@ -13,7 +13,8 @@ import {
   Clock, 
   LogOut,
   ChevronRight,
-  Sparkle
+  Sparkle,
+  DoorOpen
 } from 'lucide-react';
 import { Student, Announcement, LogLoadStatus } from '../types';
 import { NationalCollegeLogo } from './NationalCollegeLogo';
@@ -43,9 +44,17 @@ export const LeftDashboard: React.FC<LeftDashboardProps> = ({
 }) => {
   const menuItems = [
     { id: 'home', label: 'Home Dashboard', icon: Home, badge: 'Overview' },
-    { id: 'tutor', label: 'AI Tutor', icon: Sparkles, badge: 'Voice RAG' },
+    { id: 'tutor', label: 'AI Tutor', icon: Sparkles, badge: 'Voice + Notes' },
     { id: 'store', label: 'Smart Store', icon: ShoppingBag, badge: 'Vending' },
-    { id: 'profile', label: 'Student Profile', icon: User, badge: 'ID Pass' },
+    ...(!student
+      ? [{ id: 'visitor-gate', label: 'Gate Activity', icon: DoorOpen, badge: 'Visitor' }]
+      : []),
+    {
+      id: 'profile',
+      label: student?.role === 'staff' ? 'Staff Profile' : student ? 'Student Profile' : 'Profile',
+      icon: User,
+      badge: student?.role === 'staff' ? 'Staff' : student ? 'ID Pass' : 'Public',
+    },
   ];
 
   return (
@@ -81,6 +90,11 @@ export const LeftDashboard: React.FC<LeftDashboardProps> = ({
                     <h2 className="text-sm font-bold text-[#e0d7d0] tracking-tight font-serif">
                       NATIONAL COLLEGE
                     </h2>
+                    {!student && (
+                      <span className="text-[10px] text-[#807368] font-medium">
+                        Visitor · not signed in
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -92,35 +106,44 @@ export const LeftDashboard: React.FC<LeftDashboardProps> = ({
                 </button>
               </div>
 
-              {/* Student Card Summary in Drawer */}
+              {/* Identity card — student or staff only */}
               {student && (
                 <div className="p-6 border-b border-[#524639]/30 bg-[#181614]/60">
                   <div className="flex items-center space-x-4">
-                    <img
-                      src={student.photoUrl}
-                      alt={student.name}
-                      className="w-14 h-14 rounded-2xl object-cover border border-[#807368]/60 shadow-xl"
-                      referrerPolicy="no-referrer"
-                    />
+                    {student.photoUrl ? (
+                      <img
+                        src={student.photoUrl}
+                        alt={student.name}
+                        className="w-14 h-14 rounded-2xl object-cover border border-[#807368]/60 shadow-xl"
+                        referrerPolicy="no-referrer"
+                      />
+                    ) : (
+                      <div className="w-14 h-14 rounded-2xl bg-[#282420] border border-[#807368]/60 shadow-xl flex items-center justify-center text-lg font-serif italic text-[#e0d7d0]">
+                        {student.name.trim().slice(0, 1) || 'U'}
+                      </div>
+                    )}
                     <div className="space-y-0.5 overflow-hidden">
                       <div className="flex items-center space-x-1.5">
                         <span className="text-[10px] font-mono text-[#998f86] font-bold px-2 py-0.5 rounded bg-[#524639]/30 border border-[#524639]/60">
                           {student.id}
                         </span>
                         <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-0.5">
-                          <ShieldCheck className="w-3 h-3" /> Verified
+                          <ShieldCheck className="w-3 h-3" />{' '}
+                          {student.role === 'staff' ? 'Staff' : 'Student'}
                         </span>
                       </div>
                       <h3 className="text-sm font-bold text-[#e0d7d0] truncate font-['Outfit']">
                         {student.name}
                       </h3>
                       <p className="text-[11px] text-[#998f86] truncate">
-                        {student.department}
+                        {student.role === 'staff'
+                          ? `Designation: ${student.department || 'Staff'}`
+                          : student.department}
                       </p>
                     </div>
                   </div>
 
-                  {/* Face check-ins strip (event count — not a percentage) */}
+                  {student.role === 'student' && (
                   <div className="mt-4 grid grid-cols-2 gap-2 text-center">
                     <div className="p-2.5 rounded-xl bg-[#282420] border border-[#524639]/40">
                       <span className="text-[10px] uppercase tracking-wider text-[#998f86] font-bold block">
@@ -147,6 +170,7 @@ export const LeftDashboard: React.FC<LeftDashboardProps> = ({
                       </span>
                     </div>
                   </div>
+                  )}
                 </div>
               )}
 
@@ -213,18 +237,20 @@ export const LeftDashboard: React.FC<LeftDashboardProps> = ({
             </div>
 
             {/* Bottom Actions */}
-            <div className="p-4 border-t border-[#524639]/40 bg-[#181614]/80">
-              <button
-                onClick={() => {
-                  onClose();
-                  onSignOut();
-                }}
-                className="w-full flex items-center justify-center space-x-2 p-3 rounded-2xl bg-[#32201d] border border-rose-900/40 text-rose-300 text-xs font-bold hover:bg-rose-950/40 transition-colors"
-              >
-                <LogOut className="w-4 h-4" />
-                <span>Lock Biometric Session</span>
-              </button>
-            </div>
+            {student && (
+              <div className="p-4 border-t border-[#524639]/40 bg-[#181614]/80">
+                <button
+                  onClick={() => {
+                    onClose();
+                    onSignOut();
+                  }}
+                  className="w-full flex items-center justify-center space-x-2 p-3 rounded-2xl bg-[#32201d] border border-rose-900/40 text-rose-300 text-xs font-bold hover:bg-rose-950/40 transition-colors"
+                >
+                  <LogOut className="w-4 h-4" />
+                  <span>Sign Out</span>
+                </button>
+              </div>
+            )}
           </motion.aside>
         </>
       )}

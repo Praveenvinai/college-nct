@@ -4,6 +4,12 @@ import { Navbar } from './components/Navbar';
 import { LeftDashboard } from './components/LeftDashboard';
 import { Footer } from './components/Footer';
 import { HomeView } from './components/HomeView';
+import { StaffHomeView } from './components/StaffHomeView';
+import { StaffProfileView } from './components/StaffProfileView';
+import { StaffGateActivityView } from './components/StaffGateActivityView';
+import { VisitorGateActivityView } from './components/VisitorGateActivityView';
+import { StaffAttendanceView } from './components/StaffAttendanceView';
+import { StudentAttendanceView } from './components/StudentAttendanceView';
 import { AITutorView } from './components/AITutorView';
 import { StoreView } from './components/StoreView';
 import { ProfileView } from './components/ProfileView';
@@ -22,7 +28,7 @@ import {
 
 export default function App() {
   const [allStudents, setAllStudents] = useState<Student[]>(INITIAL_STUDENTS);
-  const [currentStudent, setCurrentStudent] = useState<Student | null>(INITIAL_STUDENTS[0]); // Default verified student
+  const [currentStudent, setCurrentStudent] = useState<Student | null>(null);
   const [storeItems, setStoreItems] = useState<StoreItem[]>(INITIAL_STORE_ITEMS);
   const [announcements] = useState<Announcement[]>(INITIAL_ANNOUNCEMENTS);
   const [purchases, setPurchases] = useState<PurchaseRecord[]>(INITIAL_PURCHASES);
@@ -37,6 +43,7 @@ export default function App() {
   const [gateCount, setGateCount] = useState(0);
   const [gateEntries, setGateEntries] = useState<GateLog[]>([]);
   const [gateStatus, setGateStatus] = useState<LogLoadStatus>('idle');
+  const [logsRefreshKey, setLogsRefreshKey] = useState(0);
 
   // Fetch initial data from server if available
   useEffect(() => {
@@ -56,14 +63,6 @@ export default function App() {
           const liveStudents = data.students as Student[];
 
           setAllStudents(liveStudents);
-
-          setCurrentStudent((current: Student | null) => {
-            const currentExists = current
-              ? liveStudents.some((student) => student.id === current.id)
-              : false;
-
-            return currentExists ? current : liveStudents[0];
-          });
         }
       })
       .catch((err) => {
@@ -83,7 +82,7 @@ export default function App() {
   // Live attendance + gate logs for the current student (Express → Flask → Firebase)
   useEffect(() => {
     const studentId = currentStudent?.id;
-    if (!studentId) {
+    if (!studentId || currentStudent?.role !== 'student') {
       setAttendanceCount(0);
       setAttendanceEntries([]);
       setAttendanceStatus('idle');
@@ -165,11 +164,12 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [currentStudent?.id]);
+  }, [currentStudent?.id, currentStudent?.role, logsRefreshKey]);
 
   // Handle Face Recognition Authentication Success
   const handleFaceAuthSuccess = (student: Student) => {
     setCurrentStudent(student);
+    setLogsRefreshKey((key) => key + 1);
     setIsFaceAuthModalOpen(false);
   };
 
@@ -186,10 +186,12 @@ export default function App() {
     setPurchases((prev) => [record, ...prev]);
   };
 
-  // Sign out / lock session
+  // Sign out: clear session and return to public visitor Home
   const handleSignOut = () => {
     setCurrentStudent(null);
-    setIsFaceAuthModalOpen(true);
+    setIsFaceAuthModalOpen(false);
+    setIsLeftDashboardOpen(false);
+    setActiveTab('home');
   };
 
   return (
@@ -220,42 +222,59 @@ export default function App() {
 
       {/* Main Content View Container with Smooth Tab Transitions */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 pt-8 pb-12">
-        {currentStudent ? (
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={activeTab}
-              initial={{ opacity: 0, y: 10, scale: 0.99 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -10, scale: 0.99 }}
-              transition={{ duration: 0.25, ease: 'easeOut' }}
-            >
-              {activeTab === 'home' && (
-                <HomeView
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={`${activeTab}-${currentStudent?.id ?? 'visitor'}-${currentStudent?.role ?? 'none'}`}
+            initial={{ opacity: 0, y: 10, scale: 0.99 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -10, scale: 0.99 }}
+            transition={{ duration: 0.25, ease: 'easeOut' }}
+          >
+            {activeTab === 'home' &&
+              (currentStudent?.role === 'staff' ? (
+                <StaffHomeView
                   student={currentStudent}
                   announcements={announcements}
-                  recentPurchases={purchases.filter((p) => p.studentId === currentStudent.id)}
+                  onNavigate={setActiveTab}
+                />
+              ) : (
+                <HomeView
+                  student={currentStudent?.role === 'student' ? currentStudent : null}
+                  announcements={announcements}
+                  recentPurchases={
+                    currentStudent?.role === 'student'
+                      ? purchases.filter((p) => p.studentId === currentStudent.id)
+                      : []
+                  }
                   onNavigate={setActiveTab}
                   onOpenFaceAuth={() => setIsFaceAuthModalOpen(true)}
                   attendanceCount={attendanceCount}
                   attendanceEntries={attendanceEntries}
                   attendanceStatus={attendanceStatus}
                 />
-              )}
+              ))}
 
-              {activeTab === 'tutor' && (
-                <AITutorView studentName={currentStudent.name} />
-              )}
+            {activeTab === 'tutor' && (
+              <AITutorView student={currentStudent} />
+            )}
 
-              {activeTab === 'store' && (
-                <StoreView
-                  student={currentStudent}
-                  items={storeItems}
-                  purchaseHistory={purchases.filter((p) => p.studentId === currentStudent.id)}
-                  onPurchaseSuccess={handlePurchaseSuccess}
-                />
-              )}
+            {activeTab === 'store' && (
+              <StoreView
+                student={currentStudent}
+                items={storeItems}
+                purchaseHistory={
+                  currentStudent
+                    ? purchases.filter((p) => p.studentId === currentStudent.id)
+                    : []
+                }
+                onPurchaseSuccess={handlePurchaseSuccess}
+              />
+            )}
 
-              {activeTab === 'profile' && (
+            {activeTab === 'profile' &&
+              (currentStudent?.role === 'staff' ? (
+                <StaffProfileView student={currentStudent} />
+              ) : currentStudent?.role === 'student' ? (
                 <ProfileView
                   student={currentStudent}
                   purchases={purchases}
@@ -267,32 +286,58 @@ export default function App() {
                   gateEntries={gateEntries}
                   gateStatus={gateStatus}
                 />
-              )}
+              ) : (
+                <VisitorTabNote
+                  title="Profile"
+                  body="Not signed in. Public campus information is available on Home."
+                />
+              ))}
 
-              {activeTab === 'contact' && (
-                <ContactView />
-              )}
-            </motion.div>
-          </AnimatePresence>
-        ) : (
-          <div className="text-center py-24 space-y-6">
-            <div className="w-20 h-20 mx-auto rounded-3xl bg-[#221f1c] border border-[#524639] flex items-center justify-center text-[#e0d7d0] shadow-2xl">
-              <span className="font-serif italic font-light text-3xl">NC</span>
-            </div>
-            <h2 className="text-3xl font-light text-[#e0d7d0] font-serif italic">
-              Session Locked • Biometric Face Authentication Required
-            </h2>
-            <p className="text-sm text-[#998f86] max-w-md mx-auto font-sans">
-              Please complete facial biometric verification or student ID scan to access National College Student Portal.
-            </p>
-            <button
-              onClick={() => setIsFaceAuthModalOpen(true)}
-              className="px-8 py-3.5 rounded-2xl bg-[#e0d7d0] text-[#171614] font-bold text-sm shadow-2xl hover:bg-white transition-all"
-            >
-              Start Biometric Face Scan
-            </button>
-          </div>
-        )}
+            {activeTab === 'staff-gate' &&
+              (currentStudent?.role === 'staff' ? (
+                <StaffGateActivityView student={currentStudent} />
+              ) : (
+                <VisitorTabNote
+                  title="Gate Activity"
+                  body="Staff gate activity is available after a staff login."
+                />
+              ))}
+
+            {activeTab === 'visitor-gate' &&
+              (currentStudent == null ? (
+                <VisitorGateActivityView />
+              ) : (
+                <VisitorTabNote
+                  title="Gate Activity"
+                  body="Visitor gate activity is available on the public campus portal."
+                />
+              ))}
+
+            {activeTab === 'staff-attendance' &&
+              (currentStudent?.role === 'staff' ? (
+                <StaffAttendanceView student={currentStudent} />
+              ) : (
+                <VisitorTabNote
+                  title="Attendance"
+                  body="Staff attendance is available after a staff login."
+                />
+              ))}
+
+            {activeTab === 'student-attendance' &&
+              (currentStudent?.role === 'student' ? (
+                <StudentAttendanceView student={currentStudent} />
+              ) : (
+                <VisitorTabNote
+                  title="Attendance"
+                  body="Student attendance is available after a student login."
+                />
+              ))}
+
+            {activeTab === 'contact' && (
+              <ContactView />
+            )}
+          </motion.div>
+        </AnimatePresence>
       </main>
 
       {/* Footer */}
@@ -305,6 +350,18 @@ export default function App() {
         onSuccessAuth={handleFaceAuthSuccess}
         allStudents={allStudents}
       />
+    </div>
+  );
+}
+
+function VisitorTabNote({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="max-w-lg mx-auto text-center py-16 space-y-4">
+      <div className="w-16 h-16 mx-auto rounded-3xl bg-[#221f1c] border border-[#524639] flex items-center justify-center text-[#e0d7d0] shadow-xl">
+        <span className="font-serif italic font-light text-2xl">NC</span>
+      </div>
+      <h2 className="text-2xl font-light text-[#e0d7d0] font-serif italic">{title}</h2>
+      <p className="text-sm text-[#998f86] font-sans">{body}</p>
     </div>
   );
 }

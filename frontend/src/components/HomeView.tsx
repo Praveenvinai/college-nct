@@ -9,14 +9,18 @@ import {
   Bell, 
   Activity,
   Layers,
-  ArrowRight
+  ArrowRight,
+  CalendarCheck,
+  DoorOpen,
+  User
 } from 'lucide-react';
 import { Student, Announcement, PurchaseRecord, AttendanceLog, LogLoadStatus } from '../types';
 import { NationalCollegeLogo } from './NationalCollegeLogo';
 import { CAMPUS_AERIAL_GATE_URL, CAMPUS_AUTONOMOUS_GATE_URL } from '../assets/collegeAssets';
+import { formatIstDate, formatIstTime } from '../istTime';
 
 interface HomeViewProps {
-  student: Student;
+  student: Student | null;
   announcements: Announcement[];
   recentPurchases: PurchaseRecord[];
   onNavigate: (tab: string) => void;
@@ -69,11 +73,17 @@ export const HomeView: React.FC<HomeViewProps> = ({
               </div>
 
               <h1 className="text-3xl sm:text-4xl font-light tracking-tight text-[#e0d7d0] font-serif italic pt-1">
-                Welcome back, {student.name}
+                {student ? `Welcome back, ${student.name}` : 'Welcome to National College'}
               </h1>
 
               <p className="text-xs sm:text-sm text-[#998f86] font-medium tracking-wide">
-                {student.department} • <span className="text-[#e0d7d0] font-mono">{student.rollNumber}</span>
+                {student ? (
+                  <>
+                    {student.department} • <span className="text-[#e0d7d0] font-mono">{student.rollNumber}</span>
+                  </>
+                ) : (
+                  'Public campus portal · visitor access'
+                )}
               </p>
             </div>
           </div>
@@ -95,16 +105,50 @@ export const HomeView: React.FC<HomeViewProps> = ({
               <ShoppingBag className="w-4 h-4 text-[#998f86]" />
               <span>Smart Store</span>
             </button>
+
+            {student && (
+              <button
+                type="button"
+                onClick={() => onNavigate('student-attendance')}
+                className="flex-1 lg:flex-none flex items-center justify-center space-x-2 px-6 py-3 rounded-2xl bg-[#2a2622] border border-[#524639]/60 text-[#e0d7d0] font-bold text-xs uppercase tracking-widest hover:border-[#998f86] transition-all shadow-lg"
+              >
+                <CalendarCheck className="w-4 h-4 text-[#998f86]" />
+                <span>Attendance</span>
+              </button>
+            )}
+
+            {!student && (
+              <button
+                type="button"
+                onClick={() => onNavigate('visitor-gate')}
+                className="flex-1 lg:flex-none flex items-center justify-center space-x-2 px-6 py-3 rounded-2xl bg-[#2a2622] border border-[#524639]/60 text-[#e0d7d0] font-bold text-xs uppercase tracking-widest hover:border-[#998f86] transition-all shadow-lg"
+              >
+                <DoorOpen className="w-4 h-4 text-[#998f86]" />
+                <span>Gate Activity</span>
+              </button>
+            )}
           </div>
 
         </div>
       </div>
 
       {/* Student Metrics Snapshot Grid - NO GPA, NO NFC WALLET */}
+      {student && (
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
         
         {/* Face Check-ins (event count from live attendance_log) */}
-        <div className="bg-[#221f1c] p-6 rounded-3xl border border-[#524639]/40 hover:border-[#807368]/60 transition-all duration-300 group shadow-lg">
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => onNavigate('student-attendance')}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onNavigate('student-attendance');
+            }
+          }}
+          className="bg-[#221f1c] p-6 rounded-3xl border border-[#524639]/40 hover:border-[#807368]/60 transition-all duration-300 group shadow-lg cursor-pointer"
+        >
           <div className="flex items-center justify-between mb-3">
             <span className="text-xs font-bold text-[#998f86] uppercase tracking-wider">FACE CHECK-INS</span>
             <div className="p-2 rounded-xl bg-[#383129] border border-[#524639]/60 text-[#e0d7d0] group-hover:scale-110 transition-transform">
@@ -142,7 +186,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
               <p className="text-[11px] text-[#998f86] mt-2 flex items-center gap-1">
                 <CheckCircle className="w-3 h-3 text-emerald-400" />
                 {latestAttendance?.timestamp
-                  ? `Latest: ${latestAttendance.timestamp}`
+                  ? `Latest: ${formatIstDate(latestAttendance.timestamp)} · ${formatIstTime(latestAttendance.timestamp)} IST`
                   : 'Facial biometrics auto-logged'}
               </p>
             </>
@@ -183,6 +227,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
           </p>
         </div>
       </div>
+      )}
 
       {/* Main Grid: Campus Bulletins + Portal Modules */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -247,7 +292,35 @@ export const HomeView: React.FC<HomeViewProps> = ({
           </div>
         </div>
 
+        {!student && (
+          <div className="space-y-4">
+            <h3 className="text-lg font-bold text-[#e0d7d0] font-serif italic">Campus Modules</h3>
+            <div className="space-y-2">
+              {[
+                { id: 'tutor', label: 'AI Tutor', icon: Sparkles },
+                { id: 'store', label: 'Smart Store', icon: ShoppingBag },
+                { id: 'visitor-gate', label: 'Gate Activity', icon: DoorOpen },
+                { id: 'home', label: 'Campus Information', icon: User },
+              ].map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.id + item.label}
+                    type="button"
+                    onClick={() => onNavigate(item.id)}
+                    className="w-full flex items-center space-x-3 p-4 rounded-2xl bg-[#221f1c] border border-[#524639]/40 text-left hover:border-[#807368]/60 transition-colors"
+                  >
+                    <Icon className="w-4 h-4 text-[#998f86]" />
+                    <span className="text-sm font-semibold text-[#e0d7d0]">{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Right Column: Enrolled Modules & Dispenser Log */}
+        {student && (
         <div className="space-y-6">
           
           {/* Enrolled Modules Box */}
@@ -301,6 +374,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
             </div>
           </div>
         </div>
+        )}
       </div>
     </div>
   );

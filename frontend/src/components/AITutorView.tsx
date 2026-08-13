@@ -1,66 +1,92 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  Sparkles, 
-  Mic, 
-  MicOff, 
-  Volume2, 
-  FileText, 
-  Upload, 
-  Send, 
-  Bot, 
-  User, 
-  Check, 
-  Copy, 
-  X, 
-  FileCheck, 
-  Layers, 
-  Eye, 
-  BookOpen, 
+import {
+  Mic,
+  MicOff,
+  Volume2,
+  Upload,
+  Send,
+  Check,
+  Copy,
+  X,
+  FileCheck,
+  Eye,
+  BookOpen,
   ToggleLeft,
   ToggleRight,
-  Compass,
+  Pause,
+  Play,
+  Square,
 } from 'lucide-react';
-import { TutorMessage, PDFDocument } from '../types';
+import { PDFDocument, Student, TutorMessage } from '../types';
 
 interface AITutorViewProps {
-  studentName: string;
+  student: Student | null;
 }
 
-export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
-  const [messages, setMessages] = useState<TutorMessage[]>([
-    {
-      id: 'msg-1',
-      sender: 'ai',
-      text: `Welcome ${studentName}! I am Professor Cybera, your National College AI Scholar Tutor. Upload course PDFs and I will index them with the RAG engine (FAISS + Groq). Then ask questions — I retrieve relevant pages and cite your documents.`,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    }
-  ]);
+const EXAMPLE_QUESTIONS = [
+  'What is machine learning?',
+  'Explain entropy.',
+  'Summarize this topic.',
+  'Explain this concept with an example.',
+];
 
+const FRIENDLY_ANSWER_ERROR =
+  'Unable to get an answer right now.\n\nPlease try again.';
+const FRIENDLY_UPLOAD_ERROR =
+  'Unable to upload that PDF right now.\n\nPlease try again.';
+
+function slugNotesId(filename: string): string {
+  const base = filename.replace(/\.pdf$/i, '');
+  const slug = base
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+  return slug || 'portal-notes';
+}
+
+export const AITutorView: React.FC<AITutorViewProps> = ({ student }) => {
+  const [messages, setMessages] = useState<TutorMessage[]>([]);
   const [inputQuery, setInputQuery] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isListening, setIsListening] = useState<boolean>(false);
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
+  const [isPaused, setIsPaused] = useState<boolean>(false);
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const [autoSpeechEnabled, setAutoSpeechEnabled] = useState<boolean>(true);
-  
+
   const [pdfDocuments, setPdfDocuments] = useState<PDFDocument[]>([]);
   const [isParsingPDF, setIsParsingPDF] = useState<boolean>(false);
   const [previewingDoc, setPreviewingDoc] = useState<PDFDocument | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const conversationListRef = useRef<HTMLDivElement | null>(null);
   const recognitionRef = useRef<any>(null);
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const speakTimeoutRef = useRef<number | null>(null);
+  const speechSupported =
+    typeof window !== 'undefined' && 'speechSynthesis' in window;
+
+  const role = student?.role;
+  const displayName = student?.name?.trim() || '';
+  const isVisitor = !student;
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const list = conversationListRef.current;
+    if (!list) return;
+    list.scrollTop = list.scrollHeight;
   };
 
   useEffect(() => {
+    if (messages.length === 0) return;
     scrollToBottom();
   }, [messages, isLoading]);
 
   useEffect(() => {
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      const SpeechRecognition =
+        (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       const rec = new SpeechRecognition();
       rec.continuous = false;
       rec.interimResults = true;
@@ -79,7 +105,7 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
       };
 
       rec.onerror = (err: any) => {
-        console.error("Speech recognition error:", err);
+        console.error('Speech recognition error:', err);
         setIsListening(false);
       };
 
@@ -87,9 +113,51 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
     }
   }, []);
 
+  const clearSpeakTimeout = () => {
+    if (speakTimeoutRef.current != null) {
+      window.clearTimeout(speakTimeoutRef.current);
+      speakTimeoutRef.current = null;
+    }
+  };
+
+  const stopSpeaking = () => {
+    clearSpeakTimeout();
+    utteranceRef.current = null;
+    if (speechSupported) {
+      window.speechSynthesis.cancel();
+    }
+    setIsSpeaking(false);
+    setIsPaused(false);
+    setSpeakingMessageId(null);
+  };
+
+  const pauseSpeaking = () => {
+    if (!speechSupported || !isSpeaking || isPaused) return;
+    window.speechSynthesis.pause();
+    setIsPaused(true);
+  };
+
+  const resumeSpeaking = () => {
+    if (!speechSupported || !isSpeaking || !isPaused) return;
+    window.speechSynthesis.resume();
+    setIsPaused(false);
+  };
+
+  useEffect(() => {
+    return () => {
+      clearSpeakTimeout();
+      utteranceRef.current = null;
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
+
   const toggleListening = () => {
     if (!recognitionRef.current) {
-      alert("Speech recognition is not supported in your browser. You can type your query in the input field.");
+      alert(
+        'Speech recognition is not supported in your browser. You can type your query in the input field.'
+      );
       return;
     }
 
@@ -103,20 +171,50 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
     }
   };
 
-  const speakText = (text: string) => {
-    if (!('speechSynthesis' in window)) return;
+  const speakText = (text: string, messageId?: string) => {
+    if (!speechSupported) return;
 
+    const cleanText = text.replace(/[*_#`~]/g, '').trim();
+    if (!cleanText) return;
+
+    clearSpeakTimeout();
+    utteranceRef.current = null;
     window.speechSynthesis.cancel();
-    const cleanText = text.replace(/[*_#`~]/g, '').substring(0, 400);
+
     const utterance = new SpeechSynthesisUtterance(cleanText);
     utterance.rate = 1.0;
     utterance.pitch = 1.0;
 
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
+    utterance.onstart = () => {
+      if (utteranceRef.current !== utterance) return;
+      setIsSpeaking(true);
+      setIsPaused(false);
+    };
+    utterance.onend = () => {
+      if (utteranceRef.current !== utterance) return;
+      utteranceRef.current = null;
+      setIsSpeaking(false);
+      setIsPaused(false);
+      setSpeakingMessageId(null);
+    };
+    utterance.onerror = () => {
+      if (utteranceRef.current !== utterance) return;
+      utteranceRef.current = null;
+      setIsSpeaking(false);
+      setIsPaused(false);
+      setSpeakingMessageId(null);
+    };
 
-    window.speechSynthesis.speak(utterance);
+    utteranceRef.current = utterance;
+    setIsSpeaking(true);
+    setIsPaused(false);
+    setSpeakingMessageId(messageId ?? null);
+
+    speakTimeoutRef.current = window.setTimeout(() => {
+      speakTimeoutRef.current = null;
+      if (utteranceRef.current !== utterance) return;
+      window.speechSynthesis.speak(utterance);
+    }, 50);
   };
 
   const handleMultiplePDFUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -127,68 +225,79 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
       f.name.toLowerCase().endsWith('.pdf')
     );
     if (fileList.length === 0) {
-      alert('Please upload PDF files only. The RAG engine indexes PDFs on the AI Tutor service.');
+      alert('Please upload a PDF file. Classroom notes are extracted from PDFs only.');
       e.target.value = '';
       return;
     }
 
+    const file = fileList[fileList.length - 1];
+    const notesId = slugNotesId(file.name);
+
     setIsParsingPDF(true);
-    const newDocs: PDFDocument[] = [];
-    const errors: string[] = [];
 
-    for (const file of fileList) {
-      try {
-        const formData = new FormData();
-        formData.append('file', file);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('notes_id', notesId);
 
-        const response = await fetch('/api/tutor/upload', {
-          method: 'POST',
-          body: formData,
-        });
-        const data = await response.json();
+      const response = await fetch('/api/tutor/upload', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await response.json();
 
-        if (!response.ok || data.error) {
-          errors.push(`${file.name}: ${data.error || 'upload failed'}`);
-          continue;
-        }
-
-        newDocs.push({
-          id: `pdf-${Date.now()}-${file.name}`,
-          name: data.filename || file.name,
-          pages: data.pages || 1,
-          size: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
-          uploadedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          contentSnippet: `Indexed on AI Tutor RAG · ${data.chunks ?? '?'} vector chunks · ${data.pages ?? '?'} pages with text.`,
-          isActive: true,
-        });
-      } catch (err) {
-        console.error('PDF upload error:', err);
-        errors.push(`${file.name}: AI Tutor service unreachable`);
+      if (!response.ok || data.error) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `msg-err-${Date.now()}`,
+            sender: 'ai',
+            text: FRIENDLY_UPLOAD_ERROR,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          },
+        ]);
+        setIsParsingPDF(false);
+        e.target.value = '';
+        return;
       }
-    }
 
-    if (newDocs.length > 0) {
-      setPdfDocuments((prev) => [...prev, ...newDocs]);
-      const fileNames = newDocs.map((d) => d.name).join(', ');
+      const storedNotesId =
+        typeof data.notes_id === 'string' && data.notes_id.trim()
+          ? data.notes_id.trim()
+          : notesId;
+      const pages = typeof data.pages === 'number' ? data.pages : 1;
+      const textLength = typeof data.text_length === 'number' ? data.text_length : undefined;
+
+      const newDoc: PDFDocument = {
+        id: `pdf-${Date.now()}-${file.name}`,
+        name: file.name,
+        pages,
+        size: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
+        uploadedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        contentSnippet: `Classroom notes extracted · ${pages} page${pages === 1 ? '' : 's'}${textLength != null ? ` · ${textLength} characters` : ''} · notes_id \`${storedNotesId}\`.`,
+        isActive: true,
+        notesId: storedNotesId,
+      };
+
+      setPdfDocuments([newDoc]);
       setMessages((prev) => [
         ...prev,
         {
           id: `msg-${Date.now()}`,
           sender: 'ai',
-          text: `**${newDocs.length} PDF(s) indexed** in the RAG knowledge base: \`${fileNames}\`. Ask questions and I will retrieve relevant pages.`,
+          text: `Notes uploaded: ${file.name} (${pages} pages). I will answer from this document. A new upload replaces the previous notes.`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          pdfSources: newDocs.map((d) => d.name),
+          pdfSources: [file.name],
         },
       ]);
-    }
-
-    if (errors.length > 0) {
+    } catch (err) {
+      console.error('PDF upload error:', err);
       setMessages((prev) => [
         ...prev,
         {
           id: `msg-err-${Date.now()}`,
           sender: 'ai',
-          text: `Some uploads failed:\n${errors.map((e) => `- ${e}`).join('\n')}\n\nMake sure the AI Tutor service is running (\`python ai-tutor/rag/rag.py\` on port 8001).`,
+          text: FRIENDLY_UPLOAD_ERROR,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         },
       ]);
@@ -213,11 +322,16 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
   };
 
   const clearAllDocuments = async () => {
-    if (!confirm('Remove all PDF documents from the RAG bank (local UI + server index)?')) return;
+    if (
+      !confirm(
+        'Remove the uploaded PDF from the tutor library? Classroom notes already stored in Firebase are not deleted.'
+      )
+    )
+      return;
     try {
       await fetch('/api/tutor/docs', { method: 'DELETE' });
     } catch (err) {
-      console.error('Failed to clear server KB:', err);
+      console.error('Failed to clear tutor library:', err);
     }
     setPdfDocuments([]);
   };
@@ -227,6 +341,8 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
     const queryText = customPrompt || inputQuery.trim();
     if (!queryText || isLoading) return;
 
+    stopSpeaking();
+
     if (!customPrompt) setInputQuery('');
     if (isListening && recognitionRef.current) {
       recognitionRef.current.stop();
@@ -235,6 +351,7 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
 
     const activeDocs = pdfDocuments.filter((doc) => doc.isActive !== false);
     const activeDocNames = activeDocs.map((d) => d.name);
+    const notesId = activeDocs.find((d) => d.notesId)?.notesId;
 
     const userMsg: TutorMessage = {
       id: `user-${Date.now()}`,
@@ -247,29 +364,39 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
     setMessages((prev) => [...prev, userMsg]);
     setIsLoading(true);
 
+    if (!notesId) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `ai-err-${Date.now()}`,
+          sender: 'ai',
+          text: 'Upload a lecture PDF first so I can answer from your notes.',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        },
+      ]);
+      setIsLoading(false);
+      return;
+    }
+
     try {
       const response = await fetch('/api/tutor/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: queryText,
-          filenames: activeDocNames,
-          history: messages.slice(-4),
+          notes_id: notesId,
         }),
       });
 
       const data = await response.json();
 
       if (!response.ok || data.error) {
-        const errText =
-          data.error ||
-          'AI Tutor RAG is unreachable. Start it with: python ai-tutor/rag/rag.py';
         setMessages((prev) => [
           ...prev,
           {
             id: `ai-err-${Date.now()}`,
             sender: 'ai',
-            text: errText,
+            text: FRIENDLY_ANSWER_ERROR,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           },
         ]);
@@ -277,7 +404,8 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
         return;
       }
 
-      const aiResponseText = data.text || 'I analyzed your query across the indexed course documents.';
+      const aiResponseText =
+        data.text || 'I analyzed your question using the uploaded classroom notes.';
 
       const aiMsg: TutorMessage = {
         id: `ai-${Date.now()}`,
@@ -291,7 +419,7 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
       setIsLoading(false);
 
       if (autoSpeechEnabled) {
-        speakText(aiResponseText);
+        speakText(aiResponseText, aiMsg.id);
       }
     } catch (err) {
       console.error('Error communicating with AI tutor:', err);
@@ -300,11 +428,20 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
         {
           id: `ai-err-${Date.now()}`,
           sender: 'ai',
-          text: 'Could not reach the AI Tutor. Ensure the portal server and `ai-tutor/rag/rag.py` are both running.',
+          text: FRIENDLY_ANSWER_ERROR,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         },
       ]);
       setIsLoading(false);
+    }
+  };
+
+  const handleComposerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (inputQuery.trim() && !isLoading) {
+        handleSendMessage();
+      }
     }
   };
 
@@ -314,428 +451,408 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ studentName }) => {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const activeDocCount = pdfDocuments.filter((d) => d.isActive !== false).length;
-  const totalPagesIndexed = pdfDocuments
-    .filter((d) => d.isActive !== false)
-    .reduce((acc, d) => acc + d.pages, 0);
+  const activeDocs = pdfDocuments.filter((d) => d.isActive !== false);
+  const currentMaterialName = activeDocs[0]?.name;
+
+  const welcome =
+    role === 'student' && displayName
+      ? {
+          title: `Welcome back, ${displayName}`,
+          body: 'Ask your AI Professor about your courses, lecture notes, or study topics.',
+        }
+      : role === 'staff' && displayName
+        ? {
+            title: `Welcome, ${displayName}`,
+            body: 'Ask your AI Professor about campus teaching materials, lecture notes, or academic topics.',
+          }
+        : {
+            title: 'Welcome to the AI Tutor',
+            body: 'Ask questions and explore the available campus learning resources.',
+          };
+
+  const renderSpeechControls = () =>
+    speechSupported && isSpeaking ? (
+      <div className="flex flex-wrap items-center gap-2">
+        {isPaused ? (
+          <button
+            type="button"
+            onClick={resumeSpeaking}
+            aria-label="Resume speaking"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#383129] border border-[#524639]/60 text-[#e0d7d0] text-xs font-medium hover:bg-[#524639] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#807368]"
+          >
+            <Play className="w-3 h-3" aria-hidden="true" />
+            Resume
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={pauseSpeaking}
+            aria-label="Pause speaking"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#383129] border border-[#524639]/60 text-[#e0d7d0] text-xs font-medium hover:bg-[#524639] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#807368]"
+          >
+            <Pause className="w-3 h-3" aria-hidden="true" />
+            Pause
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={stopSpeaking}
+          aria-label="Stop speaking"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#383129] border border-[#524639]/60 text-[#e0d7d0] text-xs font-medium hover:bg-[#524639] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#807368]"
+        >
+          <Square className="w-3 h-3" aria-hidden="true" />
+          Stop
+        </button>
+      </div>
+    ) : null;
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
-      
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        <div className="lg:col-span-2 glass-card p-6 sm:p-8 rounded-3xl border border-slate-800 bg-slate-900/40 flex flex-col justify-between">
+    <div className="space-y-6">
+      <header className="space-y-3">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#998f86]">
+          AI Tutor
+        </p>
+        <h1 className="text-2xl sm:text-3xl font-light text-[#e0d7d0] font-serif italic">
+          {isVisitor ? 'Public campus learning assistant' : 'Your Campus AI Professor'}
+        </h1>
+        <p className="text-sm text-[#998f86] leading-relaxed max-w-2xl">
+          Ask questions, explore your lecture material, and get answers from your campus AI
+          assistant.
+        </p>
+        <div className="pt-1">
+          <p className="text-base font-medium text-[#e0d7d0]">{welcome.title}</p>
+          <p className="text-sm text-[#998f86] mt-1 leading-relaxed">{welcome.body}</p>
+        </div>
+        {!speechSupported && (
+          <p className="text-xs text-[#998f86]">Voice playback isn't supported in this browser.</p>
+        )}
+      </header>
+
+      <section className="bg-[#221f1c] rounded-2xl border border-[#524639]/40 p-5 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
-            <div className="flex items-center space-x-3 mb-2">
-              <span className="p-2 rounded-xl bg-cyan-400/10 border border-cyan-400/30 text-cyan-400">
-                <Sparkles className="w-5 h-5 animate-spin" style={{ animationDuration: '8s' }} />
+            <h2 className="text-sm font-semibold text-[#e0d7d0] flex items-center gap-2">
+              <BookOpen className="w-4 h-4 text-[#998f86]" aria-hidden="true" />
+              Learning Material
+            </h2>
+            <p className="text-xs text-[#998f86] mt-1">
+              Current material:{' '}
+              <span className="text-[#e0d7d0]">
+                {currentMaterialName || 'None uploaded yet'}
               </span>
-              <div>
-                <div className="text-[9px] font-bold uppercase tracking-[0.3em] text-slate-500">FAISS + Groq RAG Engine</div>
-                <h2 className="text-2xl sm:text-3xl font-light text-white font-serif italic">
-                  AI Scholar Tutor
-                </h2>
-              </div>
-            </div>
-            <p className="text-xs text-slate-400 leading-relaxed mt-2 font-medium">
-              Connected to the local AI Tutor service. Upload PDFs to build a vector index, then ask questions with page-level retrieval and citations.
             </p>
           </div>
-
-          <div className="mt-4 pt-4 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center space-x-2 text-xs font-mono text-cyan-300">
-              <Layers className="w-4 h-4 text-cyan-400 shrink-0" />
-              <span>
-                <strong className="text-white">{activeDocCount}</strong> of <strong className="text-slate-400">{pdfDocuments.length}</strong> Active PDFs ({totalPagesIndexed} Pages Indexed)
-              </span>
-            </div>
-
-            <label className="flex items-center space-x-2 px-5 py-2 rounded-full bg-white text-slate-950 font-bold text-xs uppercase tracking-widest hover:bg-cyan-400 transition-colors shadow-md cursor-pointer">
-              <Upload className="w-3.5 h-3.5" />
-              <span>{isParsingPDF ? 'Indexing PDFs...' : 'Upload Course PDFs'}</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#e0d7d0] text-[#171614] text-xs font-semibold cursor-pointer hover:bg-white transition-colors focus-within:ring-2 focus-within:ring-[#807368]">
+              <Upload className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>{isParsingPDF ? 'Extracting notes...' : 'Upload lecture PDF'}</span>
               <input
                 type="file"
                 accept=".pdf,application/pdf"
-                multiple
                 onChange={handleMultiplePDFUpload}
-                className="hidden"
+                className="sr-only"
                 disabled={isParsingPDF}
+                aria-label="Upload lecture PDF"
               />
             </label>
-          </div>
-        </div>
-
-        <div className="glass-panel p-6 rounded-3xl border border-slate-800 flex flex-col items-center justify-center text-center relative overflow-hidden bg-slate-900/30">
-          <div className="absolute inset-0 bg-gradient-to-b from-cyan-500/5 via-amber-500/5 to-transparent pointer-events-none"></div>
-
-          <div className="relative flex items-center justify-center my-2">
-            <div className={`w-28 h-28 rounded-full border-2 border-cyan-400/40 flex items-center justify-center transition-all duration-500 ${
-              isSpeaking ? 'animate-ping border-cyan-300 scale-110' : isListening ? 'border-rose-500 scale-105' : 'glow-cyan'
-            }`}>
-              <div className={`w-20 h-20 rounded-full bg-gradient-to-tr from-cyan-500 via-slate-900 to-amber-300 flex items-center justify-center shadow-2xl transition-transform ${
-                isSpeaking || isListening ? 'scale-110 animate-pulse' : ''
-              }`}>
-                <Bot className="w-10 h-10 text-slate-100" />
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-3 space-y-1">
-            <p className="text-xs font-bold text-white font-mono uppercase tracking-wider">
-              {isListening ? 'LISTENING TO VOICE...' : isSpeaking ? 'PROFESSOR CYBERA SPEAKING...' : isLoading ? 'RETRIEVING FROM RAG...' : 'RAG READY'}
-            </p>
-            <p className="text-[11px] text-slate-400">
-              {autoSpeechEnabled ? 'Voice Playback Active' : 'Voice Muted'}
-            </p>
-          </div>
-
-          <button
-            onClick={() => setAutoSpeechEnabled(!autoSpeechEnabled)}
-            className="mt-3 px-3 py-1 rounded-full text-[10px] font-bold font-mono border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
-          >
-            {autoSpeechEnabled ? 'Mute Audio' : 'Unmute Audio'}
-          </button>
-        </div>
-      </div>
-
-      <div className="glass-panel p-5 rounded-3xl border border-slate-800 space-y-4 bg-slate-900/40">
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
-          <div className="flex items-center space-x-2">
-            <BookOpen className="w-4 h-4 text-cyan-400" />
-            <h3 className="text-xs font-bold text-white uppercase tracking-widest">
-              Indexed PDF Library ({pdfDocuments.length} Documents)
-            </h3>
-          </div>
-
-          {pdfDocuments.length > 0 && (
-            <div className="flex items-center space-x-2 text-xs">
-              <button
-                type="button"
-                onClick={() => setAllDocsActive(true)}
-                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-mono transition-colors"
-              >
-                Select All
-              </button>
-              <button
-                type="button"
-                onClick={() => setAllDocsActive(false)}
-                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-mono transition-colors"
-              >
-                Deselect All
-              </button>
+            {pdfDocuments.length > 0 && (
               <button
                 type="button"
                 onClick={clearAllDocuments}
-                className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-[10px] font-mono transition-colors border border-rose-500/30"
+                className="px-3 py-2 rounded-xl border border-[#524639]/60 text-xs text-[#998f86] hover:text-[#e0d7d0] hover:bg-[#383129] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#807368]"
               >
-                Clear All
+                Clear
               </button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         {pdfDocuments.length === 0 ? (
-          <div className="py-8 text-center space-y-2">
-            <FileText className="w-8 h-8 text-slate-600 mx-auto" />
-            <p className="text-xs text-slate-400 font-medium">No PDF documents indexed yet.</p>
-            <p className="text-[11px] text-slate-500">Upload lecture PDFs to build the FAISS knowledge base on the AI Tutor service.</p>
-          </div>
+          <p className="text-xs text-[#998f86]">
+            Upload a lecture PDF. Answers are grounded in that document.
+          </p>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          <ul className="space-y-2">
             {pdfDocuments.map((doc) => {
               const isActive = doc.isActive !== false;
               return (
-                <div
+                <li
                   key={doc.id}
-                  className={`p-3.5 rounded-2xl border transition-all flex flex-col justify-between space-y-2 ${
-                    isActive
-                      ? 'bg-slate-900/90 border-cyan-400/40 shadow-lg glow-cyan'
-                      : 'bg-slate-950/60 border-slate-800/80 opacity-60 hover:opacity-100'
-                  }`}
+                  className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-[#171614] border border-[#524639]/30"
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center space-x-2.5 min-w-0">
-                      <button
-                        type="button"
-                        onClick={() => toggleDocActive(doc.id)}
-                        className="text-cyan-400 hover:scale-110 transition-transform shrink-0"
-                        title={isActive ? "Disable this PDF for RAG" : "Enable this PDF for RAG"}
-                      >
-                        {isActive ? (
-                          <ToggleRight className="w-6 h-6 text-cyan-400" />
-                        ) : (
-                          <ToggleLeft className="w-6 h-6 text-slate-600" />
-                        )}
-                      </button>
-                      <div className="min-w-0">
-                        <p className={`text-xs font-bold font-mono truncate ${isActive ? 'text-white' : 'text-slate-400'}`}>
-                          {doc.name}
-                        </p>
-                        <p className="text-[10px] text-slate-400 font-mono">
-                          {doc.pages} Pages · {doc.size}
-                        </p>
-                      </div>
-                    </div>
-
+                  <div className="flex items-center gap-2 min-w-0">
                     <button
                       type="button"
-                      onClick={() => removeDocument(doc.id)}
-                      className="p-1 hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 rounded-lg transition-colors shrink-0"
-                      title="Remove from UI (server index keeps chunks until Clear All)"
+                      onClick={() => toggleDocActive(doc.id)}
+                      aria-label={isActive ? 'Exclude this PDF from answers' : 'Use this PDF for answers'}
+                      className="shrink-0 text-[#998f86] hover:text-[#e0d7d0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#807368] rounded"
                     >
-                      <X className="w-3.5 h-3.5" />
+                      {isActive ? (
+                        <ToggleRight className="w-5 h-5" aria-hidden="true" />
+                      ) : (
+                        <ToggleLeft className="w-5 h-5" aria-hidden="true" />
+                      )}
                     </button>
+                    <div className="min-w-0">
+                      <p className="text-sm text-[#e0d7d0] truncate">{doc.name}</p>
+                      <p className="text-[11px] text-[#998f86]">
+                        {doc.pages} pages · {isActive ? 'Used for answers' : 'Excluded'}
+                      </p>
+                    </div>
                   </div>
-
-                  <div className="flex items-center justify-between pt-2 border-t border-slate-800/60 text-[10px] font-mono">
-                    <span className={isActive ? 'text-cyan-400 font-bold' : 'text-slate-500'}>
-                      {isActive ? '● Included in retrieval' : '○ Excluded'}
-                    </span>
+                  <div className="flex items-center gap-1">
                     <button
                       type="button"
                       onClick={() => setPreviewingDoc(doc)}
-                      className="flex items-center space-x-1 text-slate-400 hover:text-white transition-colors"
+                      aria-label={`View details for ${doc.name}`}
+                      className="p-2 rounded-lg text-[#998f86] hover:text-[#e0d7d0] hover:bg-[#383129] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#807368]"
                     >
-                      <Eye className="w-3 h-3 text-cyan-400" />
-                      <span>Details</span>
+                      <Eye className="w-4 h-4" aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeDocument(doc.id)}
+                      aria-label={`Remove ${doc.name}`}
+                      className="p-2 rounded-lg text-[#998f86] hover:text-[#e0d7d0] hover:bg-[#383129] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#807368]"
+                    >
+                      <X className="w-4 h-4" aria-hidden="true" />
                     </button>
                   </div>
-                </div>
+                </li>
               );
             })}
+          </ul>
+        )}
+
+        {pdfDocuments.length > 1 && (
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setAllDocsActive(true)}
+              className="text-[11px] text-[#998f86] hover:text-[#e0d7d0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#807368] rounded"
+            >
+              Select all
+            </button>
+            <button
+              type="button"
+              onClick={() => setAllDocsActive(false)}
+              className="text-[11px] text-[#998f86] hover:text-[#e0d7d0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#807368] rounded"
+            >
+              Deselect all
+            </button>
           </div>
         )}
-      </div>
+      </section>
 
-      <div className="flex items-center space-x-2 overflow-x-auto pb-1 scrollbar-none">
-        <span className="text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest shrink-0 flex items-center gap-1">
-          <Compass className="w-3.5 h-3.5 text-cyan-400" />
-          Quick queries:
-        </span>
-        <button
-          onClick={() => handleSendMessage(undefined, "Summarize the key concepts from my uploaded PDF documents.")}
-          className="px-3 py-1.5 rounded-full bg-slate-900 border border-slate-800 hover:border-cyan-400/40 text-slate-300 hover:text-white text-[11px] font-medium shrink-0 transition-all"
-        >
-          Summarize Key Concepts
-        </button>
-        <button
-          onClick={() => handleSendMessage(undefined, "Generate 5 exam review questions based on my uploaded course documents.")}
-          className="px-3 py-1.5 rounded-full bg-slate-900 border border-slate-800 hover:border-cyan-400/40 text-slate-300 hover:text-white text-[11px] font-medium shrink-0 transition-all"
-        >
-          Exam Prep Questions
-        </button>
-        <button
-          onClick={() => handleSendMessage(undefined, "Extract important formulas and definitions from my documents, citing pages.")}
-          className="px-3 py-1.5 rounded-full bg-slate-900 border border-slate-800 hover:border-cyan-400/40 text-slate-300 hover:text-white text-[11px] font-medium shrink-0 transition-all"
-        >
-          Formulas & Citations
-        </button>
-      </div>
-
-      {(isListening || isLoading || isSpeaking) && (
-        <div className="bg-[#221f1c] border border-[#524639]/60 rounded-2xl p-4 flex items-center justify-between shadow-xl animate-in fade-in slide-in-from-bottom-2">
-          <div className="flex items-center space-x-4">
-            <div className="flex items-center space-x-1.5 h-10 px-3 bg-[#171614] rounded-xl border border-[#524639]/60">
-              <span className="w-1 bg-[#e0d7d0] rounded-full animate-soundwave" style={{ animationDelay: '0.05s', height: '80%' }}></span>
-              <span className="w-1 bg-[#998f86] rounded-full animate-soundwave" style={{ animationDelay: '0.2s', height: '100%' }}></span>
-              <span className="w-1 bg-[#e0d7d0] rounded-full animate-soundwave" style={{ animationDelay: '0.35s', height: '60%' }}></span>
-              <span className="w-1 bg-[#807368] rounded-full animate-soundwave" style={{ animationDelay: '0.1s', height: '90%' }}></span>
-              <span className="w-1 bg-[#e0d7d0] rounded-full animate-soundwave" style={{ animationDelay: '0.4s', height: '100%' }}></span>
-              <span className="w-1 bg-[#998f86] rounded-full animate-soundwave" style={{ animationDelay: '0.25s', height: '70%' }}></span>
-              <span className="w-1 bg-[#e0d7d0] rounded-full animate-soundwave" style={{ animationDelay: '0.15s', height: '95%' }}></span>
-              <span className="w-1 bg-[#807368] rounded-full animate-soundwave" style={{ animationDelay: '0.3s', height: '50%' }}></span>
+      <section className="bg-[#221f1c] rounded-2xl border border-[#524639]/40 overflow-hidden flex flex-col min-h-[420px] max-h-[min(70vh,640px)]">
+        <div ref={conversationListRef} className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+          {messages.length === 0 && !isLoading && (
+            <div className="space-y-4 py-4">
+              <div>
+                <p className="text-sm font-semibold text-[#e0d7d0]">AI Professor</p>
+                <p className="text-sm text-[#998f86] mt-2 leading-relaxed">
+                  What would you like to learn today?
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-[#998f86] mb-2">Try asking:</p>
+                <ul className="space-y-2">
+                  {EXAMPLE_QUESTIONS.map((question) => (
+                    <li key={question}>
+                      <button
+                        type="button"
+                        onClick={() => handleSendMessage(undefined, question)}
+                        disabled={isLoading}
+                        className="text-left text-sm text-[#e0d7d0] hover:text-white underline-offset-2 hover:underline disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#807368] rounded"
+                      >
+                        {question}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </div>
+          )}
 
-            <div>
-              <p className="text-xs font-bold text-[#e0d7d0] flex items-center gap-2">
-                {isListening && <span className="inline-block w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping"></span>}
-                {isListening 
-                  ? 'Listening & Analyzing Voice Input...' 
-                  : isLoading 
-                  ? 'Retrieving chunks from FAISS and generating answer...' 
-                  : 'Speaking response...'}
-              </p>
-              <p className="text-[10px] text-[#998f86] font-mono mt-0.5">
-                {isListening ? 'Speak clearly into your microphone' : 'Professor Cybera · Groq RAG'}
-              </p>
-            </div>
-          </div>
-
-          <div className="text-xs font-mono font-bold text-[#e0d7d0] bg-[#383129] px-3.5 py-1.5 rounded-full border border-[#524639]/60 shadow-sm">
-            {isListening ? 'Listening' : isLoading ? 'Processing' : 'Speaking'}
-          </div>
-        </div>
-      )}
-
-      <div className="bg-[#221f1c] rounded-3xl border border-[#524639]/50 shadow-2xl overflow-hidden flex flex-col h-[520px]">
-        
-        <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-[#171614]/50">
           {messages.map((msg) => {
             const isAI = msg.sender === 'ai';
+            const isThisSpeaking = isSpeaking && msg.id === speakingMessageId;
+
             return (
-              <div
-                key={msg.id}
-                className={`flex items-start space-x-3.5 ${isAI ? '' : 'flex-row-reverse space-x-reverse'}`}
-              >
-                <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 border ${
-                  isAI 
-                    ? 'bg-[#2a2622] border-[#807368]/60 text-[#e0d7d0] shadow-md' 
-                    : 'bg-[#383129] border-[#524639] text-[#e0d7d0]'
-                }`}>
-                  {isAI ? <Bot className="w-5 h-5 text-[#e0d7d0]" /> : <User className="w-5 h-5" />}
+              <article key={msg.id} className="space-y-2 max-w-3xl">
+                <p className="text-xs font-semibold uppercase tracking-wide text-[#998f86]">
+                  {isAI ? 'AI Professor' : 'You'}
+                </p>
+                <div
+                  className={`text-sm leading-7 whitespace-pre-wrap ${
+                    isAI ? 'text-[#e0d7d0]' : 'text-[#c7b8ac]'
+                  }`}
+                >
+                  {msg.text}
                 </div>
 
-                <div className={`max-w-2xl rounded-2xl p-5 border text-xs sm:text-sm leading-relaxed space-y-2.5 ${
-                  isAI
-                    ? 'bg-[#221f1c] border-[#524639]/60 text-[#e0d7d0] shadow-xl'
-                    : 'bg-[#2a2622] border-[#807368]/50 text-[#e0d7d0] shadow-lg'
-                }`}>
-                  <div className="flex items-center justify-between text-[11px] font-mono text-[#998f86] pb-2 border-b border-[#524639]/40">
-                    <span className="font-bold text-[#e0d7d0]">
-                      {isAI ? 'PROFESSOR CYBERA (AI TUTOR)' : studentName}
-                    </span>
-                    <span className="flex items-center gap-2">
-                      <span>{msg.timestamp}</span>
-                    </span>
-                  </div>
+                {isAI && msg.pdfSources && msg.pdfSources.length > 0 && (
+                  <p className="text-[11px] text-[#998f86] flex flex-wrap items-center gap-1.5">
+                    <FileCheck className="w-3 h-3" aria-hidden="true" />
+                    {msg.pdfSources.join(', ')}
+                  </p>
+                )}
 
-                  {msg.pdfSources && msg.pdfSources.length > 0 && (
-                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                      <span className="text-[10px] font-mono uppercase text-[#998f86] font-bold">Cited Docs ({msg.pdfSources.length}):</span>
-                      {msg.pdfSources.map((source, idx) => (
-                        <span
-                          key={idx}
-                          className="px-2 py-0.5 rounded-md bg-[#383129] border border-[#524639]/60 text-[#e0d7d0] text-[10px] font-mono flex items-center gap-1"
-                        >
-                          <FileCheck className="w-3 h-3 text-[#998f86]" />
-                          <span className="truncate max-w-[180px]">{source}</span>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="whitespace-pre-wrap font-sans text-[#e0d7d0]">
-                    {msg.text}
-                  </div>
-
-                  {isAI && (
-                    <div className="pt-2 flex items-center space-x-3 text-[11px] font-mono text-[#998f86] border-t border-[#524639]/40">
+                {isAI && (
+                  <div className="pt-1 flex flex-wrap items-center gap-3">
+                    {isThisSpeaking ? (
+                      <div className="space-y-2">
+                        <p className="text-xs text-[#998f86]">
+                          {isPaused ? 'Paused' : 'Speaking...'}
+                        </p>
+                        {renderSpeechControls()}
+                      </div>
+                    ) : speechSupported ? (
                       <button
-                        onClick={() => speakText(msg.text)}
-                        className="flex items-center space-x-1 hover:text-[#e0d7d0] transition-colors"
+                        type="button"
+                        onClick={() => speakText(msg.text, msg.id)}
+                        aria-label="Replay answer"
+                        className="flex items-center gap-1.5 text-xs text-[#998f86] hover:text-[#e0d7d0] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#807368] rounded"
                       >
-                        <Volume2 className="w-3.5 h-3.5 text-[#e0d7d0]" />
-                        <span>Replay Voice</span>
+                        <Volume2 className="w-3.5 h-3.5" aria-hidden="true" />
+                        Replay
                       </button>
+                    ) : null}
 
-                      <button
-                        onClick={() => handleCopy(msg.id, msg.text)}
-                        className="flex items-center space-x-1 hover:text-[#e0d7d0] transition-colors"
-                      >
-                        {copiedId === msg.id ? (
-                          <>
-                            <Check className="w-3.5 h-3.5 text-emerald-400" />
-                            <span className="text-emerald-400">Copied</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="w-3.5 h-3.5" />
-                            <span>Copy Notes</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
+                    <button
+                      type="button"
+                      onClick={() => handleCopy(msg.id, msg.text)}
+                      aria-label="Copy answer"
+                      className="flex items-center gap-1.5 text-xs text-[#998f86] hover:text-[#e0d7d0] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#807368] rounded"
+                    >
+                      {copiedId === msg.id ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-400" aria-hidden="true" />
+                          <span className="text-emerald-400">Copied</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                          Copy
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
+              </article>
             );
           })}
 
           {isLoading && (
-            <div className="flex items-center space-x-3 p-4 rounded-2xl bg-[#221f1c] border border-[#524639]/60 w-fit">
-              <Bot className="w-5 h-5 text-[#e0d7d0] animate-spin" />
-              <span className="text-xs font-mono text-[#e0d7d0]">
-                Retrieving from {activeDocCount || 'general'} active PDF{activeDocCount === 1 ? '' : 's'}...
-              </span>
+            <div className="flex items-center gap-2 text-sm text-[#998f86]" aria-live="polite">
+              <span
+                className="inline-block w-2 h-2 rounded-full bg-[#e0d7d0] animate-pulse"
+                aria-hidden="true"
+              />
+              AI Professor is thinking...
             </div>
           )}
 
           <div ref={messagesEndRef} />
         </div>
 
-        <form onSubmit={handleSendMessage} className="p-4 bg-[#181614] border-t border-[#524639]/50 flex items-center space-x-3">
-          
-          <button
-            type="button"
-            onClick={toggleListening}
-            className={`p-3 rounded-2xl border transition-all duration-300 flex items-center justify-center shrink-0 ${
-              isListening
-                ? 'bg-rose-600 text-white border-rose-400 animate-pulse shadow-xl'
-                : 'bg-[#2a2622] border-[#524639] text-[#e0d7d0] hover:border-[#807368] hover:bg-[#383129]'
-            }`}
-            title={isListening ? 'Stop Microphone' : 'Start Speech Input'}
-          >
-            {isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
-          </button>
+        <form
+          onSubmit={handleSendMessage}
+          className="p-4 sm:p-5 border-t border-[#524639]/40 bg-[#181614] space-y-3"
+        >
+          <div className="relative">
+            <textarea
+              value={inputQuery}
+              onChange={(e) => setInputQuery(e.target.value)}
+              onKeyDown={handleComposerKeyDown}
+              disabled={isLoading}
+              rows={3}
+              placeholder={
+                isListening
+                  ? 'Listening...'
+                  : activeDocs.length > 0
+                    ? 'Ask your question...'
+                    : 'Ask your question... Upload a lecture PDF for notes-grounded answers.'
+              }
+              aria-label="Ask your question"
+              className="w-full resize-none bg-[#221f1c] border border-[#524639]/60 rounded-2xl px-4 py-3 pr-12 text-sm text-[#e0d7d0] placeholder-[#998f86] leading-relaxed focus:outline-none focus:ring-2 focus:ring-[#807368] disabled:opacity-50"
+            />
+            <button
+              type="button"
+              onClick={toggleListening}
+              aria-label={isListening ? 'Stop microphone' : 'Start speech input'}
+              className={`absolute right-3 bottom-3 p-2 rounded-xl border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#807368] ${
+                isListening
+                  ? 'bg-rose-700 text-white border-rose-500'
+                  : 'bg-[#2a2622] border-[#524639] text-[#e0d7d0] hover:bg-[#383129]'
+              }`}
+            >
+              {isListening ? (
+                <MicOff className="w-4 h-4" aria-hidden="true" />
+              ) : (
+                <Mic className="w-4 h-4" aria-hidden="true" />
+              )}
+            </button>
+          </div>
 
-          <input
-            type="text"
-            value={inputQuery}
-            onChange={(e) => setInputQuery(e.target.value)}
-            placeholder={
-              isListening
-                ? 'Hearing your speech input...'
-                : activeDocCount > 0
-                  ? `Ask across your ${activeDocCount} active PDF document${activeDocCount === 1 ? '' : 's'}...`
-                  : 'Ask Professor Cybera (upload PDFs for document-grounded answers)...'
-            }
-            className="flex-1 bg-[#221f1c] border border-[#524639]/60 rounded-2xl px-4 py-3 text-xs sm:text-sm text-[#e0d7d0] placeholder-[#998f86] focus:outline-none focus:border-[#807368] font-medium"
-          />
-
-          <button
-            type="submit"
-            disabled={!inputQuery.trim() || isLoading}
-            className="p-3 rounded-2xl bg-[#e0d7d0] text-[#171614] font-bold hover:bg-white transition-all disabled:opacity-40 shadow-lg shrink-0"
-          >
-            <Send className="w-5 h-5" />
-          </button>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                const next = !autoSpeechEnabled;
+                setAutoSpeechEnabled(next);
+                if (!next) stopSpeaking();
+              }}
+              disabled={!speechSupported}
+              className="text-xs text-[#998f86] hover:text-[#e0d7d0] disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#807368] rounded"
+            >
+              {autoSpeechEnabled ? 'Mute voice' : 'Unmute voice'}
+            </button>
+            <button
+              type="submit"
+              disabled={!inputQuery.trim() || isLoading}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#e0d7d0] text-[#171614] text-sm font-semibold hover:bg-white transition-colors disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#807368]"
+            >
+              <Send className="w-4 h-4" aria-hidden="true" />
+              Ask Professor
+            </button>
+          </div>
         </form>
-      </div>
+      </section>
 
       {previewingDoc && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in">
-          <div className="glass-card max-w-2xl w-full p-6 rounded-3xl border border-slate-800 space-y-4 max-h-[85vh] flex flex-col shadow-2xl">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center space-x-2.5">
-                <FileCheck className="w-5 h-5 text-cyan-400" />
-                <div>
-                  <h3 className="text-sm font-bold text-white font-mono">{previewingDoc.name}</h3>
-                  <p className="text-[10px] text-slate-400 font-mono">
-                    {previewingDoc.pages} Pages · {previewingDoc.size} · Uploaded {previewingDoc.uploadedAt}
-                  </p>
-                </div>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#171614]/80">
+          <div
+            className="bg-[#221f1c] max-w-2xl w-full p-6 rounded-2xl border border-[#524639]/50 space-y-4 max-h-[85vh] flex flex-col"
+            role="dialog"
+            aria-labelledby="pdf-preview-title"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 id="pdf-preview-title" className="text-sm font-semibold text-[#e0d7d0]">
+                  {previewingDoc.name}
+                </h3>
+                <p className="text-xs text-[#998f86] mt-1">
+                  {previewingDoc.pages} pages · {previewingDoc.size}
+                </p>
               </div>
               <button
+                type="button"
                 onClick={() => setPreviewingDoc(null)}
-                className="p-1.5 hover:bg-slate-800 rounded-xl text-slate-400 hover:text-white transition-colors"
+                aria-label="Close document details"
+                className="p-1.5 rounded-lg text-[#998f86] hover:text-[#e0d7d0] hover:bg-[#383129] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#807368]"
               >
-                <X className="w-5 h-5" />
+                <X className="w-5 h-5" aria-hidden="true" />
               </button>
             </div>
-
-            <div className="flex-1 overflow-y-auto bg-slate-950 p-4 rounded-2xl border border-slate-800 text-xs font-mono text-slate-300 whitespace-pre-wrap leading-relaxed">
+            <div className="flex-1 overflow-y-auto bg-[#171614] p-4 rounded-xl border border-[#524639]/30 text-xs text-[#c7b8ac] whitespace-pre-wrap leading-relaxed">
               {previewingDoc.contentSnippet}
             </div>
-
-            <div className="flex items-center justify-between pt-2 text-xs">
-              <span className="text-[11px] text-slate-400 font-mono">
-                Status: <strong className={previewingDoc.isActive !== false ? "text-cyan-400" : "text-rose-400"}>
-                  {previewingDoc.isActive !== false ? "Active for RAG retrieval" : "Inactive"}
-                </strong>
-              </span>
+            <div className="flex justify-end">
               <button
+                type="button"
                 onClick={() => setPreviewingDoc(null)}
-                className="px-5 py-2 rounded-full bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs transition-colors"
+                className="px-4 py-2 rounded-xl bg-[#383129] text-[#e0d7d0] text-xs font-medium hover:bg-[#524639] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#807368]"
               >
                 Close
               </button>

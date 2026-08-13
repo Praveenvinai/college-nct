@@ -1,3 +1,5 @@
+export type UserRole = 'student' | 'staff';
+
 export interface Student {
   id: string;
   name: string;
@@ -13,6 +15,7 @@ export interface Student {
   bio: string;
   enrolledCourses: string[];
   achievements: string[];
+  role?: UserRole;
 }
 
 /** Face attendance event from Express → Flask → Firebase attendance_log */
@@ -78,6 +81,7 @@ export interface PDFDocument {
   uploadedAt: string;
   contentSnippet: string;
   isActive?: boolean;
+  notesId?: string;
 }
 
 export interface StoreItem {

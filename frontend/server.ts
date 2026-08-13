@@ -13,10 +13,18 @@ let storeDb: StoreItem[] = [...INITIAL_STORE_ITEMS];
 let purchasesDb: PurchaseRecord[] = [...INITIAL_PURCHASES];
 let ticketsDb: SupportTicket[] = [];
 
-const AI_TUTOR_URL = (process.env.AI_TUTOR_URL || "http://127.0.0.1:8001").replace(/\/$/, "");
 const BACKEND_URL = (
   process.env.BACKEND_URL || "https://college-nct-backend.onrender.com"
 ).replace(/\/$/, "");
+
+function flaskErrorMessage(data: unknown, fallback: string): string {
+  if (data && typeof data === "object") {
+    const rec = data as Record<string, unknown>;
+    if (typeof rec.message === "string" && rec.message.trim()) return rec.message;
+    if (typeof rec.error === "string" && rec.error.trim()) return rec.error;
+  }
+  return fallback;
+}
 
 function parseOptionalStudentId(raw: unknown): string | undefined {
   if (typeof raw !== "string") return undefined;
@@ -216,6 +224,185 @@ async function startServer() {
     return proxyLogList(res, "/api/gate-logs", studentId);
   });
 
+  // Browser camera face match — Flask match-image (read-only), then one browser-attendance write (never /recognize)
+  app.post("/api/face/verify-image", async (req, res) => {
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const rawSnapshot = (body as { snapshotBase64?: unknown }).snapshotBase64;
+    const snapshotBase64 =
+      typeof rawSnapshot === "string" ? rawSnapshot.trim() : "";
+
+    if (!snapshotBase64) {
+      return res.status(400).json({
+        success: false,
+        code: "invalid_image",
+        message: "Could not capture image. Retry camera.",
+      });
+    }
+
+    try {
+      const upstream = await fetch(`${BACKEND_URL}/api/face/match-image`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image_base64: snapshotBase64, tolerance: 0.6 }),
+        signal: AbortSignal.timeout(60000),
+      });
+
+      const data = await upstream.json().catch(() => null);
+      if (!data || typeof data !== "object") {
+        return res.status(502).json({
+          success: false,
+          code: "backend_unavailable",
+          message: "Face service unavailable. Check backend connection.",
+        });
+      }
+
+      const matched = (data as { matched?: unknown }).matched === true;
+      const studentId =
+        typeof (data as { student_id?: unknown }).student_id === "string"
+          ? (data as { student_id: string }).student_id.trim()
+          : typeof (data as { id?: unknown }).id === "string"
+            ? (data as { id: string }).id.trim()
+            : "";
+      const personName =
+        typeof (data as { name?: unknown }).name === "string"
+          ? (data as { name: string }).name.trim()
+          : typeof (data as { student_name?: unknown }).student_name === "string"
+            ? (data as { student_name: string }).student_name.trim()
+            : "";
+  const role =
+    typeof (data as { role?: unknown }).role === "string"
+      ? (data as { role: string }).role.trim()
+      : "";
+  const normalizedRole = role === "staff" || role === "student" ? role : "";
+      const department =
+        typeof (data as { department?: unknown }).department === "string"
+          ? (data as { department: string }).department.trim()
+          : "";
+      const confidence =
+        typeof (data as { confidence?: unknown }).confidence === "number"
+          ? (data as { confidence: number }).confidence
+          : undefined;
+      const upstreamMessage =
+        typeof (data as { message?: unknown }).message === "string"
+          ? (data as { message: string }).message
+          : undefined;
+      const upstreamCode =
+        typeof (data as { code?: unknown }).code === "string"
+          ? (data as { code: string }).code
+          : undefined;
+
+      if (!upstream.ok || !matched || !studentId) {
+        const status =
+          upstream.status === 401 || upstream.status === 400
+            ? upstream.status
+            : upstream.status >= 500
+              ? 502
+              : upstream.status || 401;
+
+        const codeMap: Record<string, string> = {
+          no_face: "No face detected. Center your face in the frame and try again.",
+          multiple_faces:
+            "Multiple faces detected. Only one person should be in frame.",
+          no_match:
+            "Face not recognized. Please try again.",
+          invalid_image: "Could not capture image. Retry camera.",
+          encodings_unavailable:
+            "Face service unavailable. Check backend connection.",
+        };
+
+        return res.status(status >= 400 && status < 600 ? status : 401).json({
+          success: false,
+          code: upstreamCode || "no_match",
+          message:
+            upstreamMessage ||
+            (upstreamCode && codeMap[upstreamCode]) ||
+            "Face service unavailable. Check backend connection.",
+        });
+      }
+
+      const live = await fetchLiveStudents();
+      const liveAvailable = live !== null && live.length > 0;
+      const pool = liveAvailable ? live! : studentsDb;
+      let matchedStudent = pool.find((s) => s.id === studentId) ?? null;
+
+      if (!matchedStudent) {
+        matchedStudent = mapLiveBackendStudent({
+          student_id: studentId,
+          name: personName,
+          department,
+        });
+      }
+
+      if (!matchedStudent) {
+        return res.status(401).json({
+          success: false,
+          code: "no_match",
+          message: "Face not recognized. Please try again.",
+        });
+      }
+
+      if (normalizedRole) {
+        matchedStudent = {
+          ...matchedStudent,
+          role: normalizedRole,
+          ...(department ? { department } : {}),
+        };
+      }
+
+      let attendance: {
+        recorded: boolean;
+        source: string;
+        duplicate?: boolean;
+      } = {
+        recorded: false,
+        source: "browser_face",
+      };
+
+      if (normalizedRole !== "staff") {
+        try {
+          const attRes = await fetch(`${BACKEND_URL}/api/face/browser-attendance`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              student_id: studentId,
+              confidence: confidence ?? 0,
+            }),
+            signal: AbortSignal.timeout(15000),
+          });
+          const attData = await attRes.json().catch(() => null);
+          if (attData && typeof attData === "object") {
+            const recorded = (attData as { recorded?: unknown }).recorded === true;
+            const duplicate = (attData as { duplicate?: unknown }).duplicate === true;
+            attendance = {
+              recorded,
+              source: "browser_face",
+              ...(duplicate ? { duplicate: true } : {}),
+            };
+          }
+        } catch {
+          // Match already succeeded — do not block portal session if attendance write fails.
+        }
+      }
+
+      return res.json({
+        success: true,
+        student: matchedStudent,
+        confidence: confidence ?? 0,
+        matchDescriptor: matchedStudent.faceEmbeddingHash,
+        attendance,
+        message: attendance.recorded
+          ? "Face recognized and attendance recorded."
+          : "Biometric face verification successful. Access granted.",
+      });
+    } catch {
+      return res.status(502).json({
+        success: false,
+        code: "backend_unavailable",
+        message: "Face service unavailable. Check backend connection.",
+      });
+    }
+  });
+
   // Face Verification Endpoint — resolves against LIVE Flask students (no image ML; no attendance write)
   app.post("/api/face/verify", async (req, res) => {
     const body = req.body && typeof req.body === "object" ? req.body : {};
@@ -258,6 +445,122 @@ async function startServer() {
       success: false,
       message: "Student record not found.",
     });
+  });
+
+  // Latest gate face check-in — READ ONLY; never writes attendance / never calls /recognize
+  const FACE_CHECKIN_FRESHNESS_MS = 60_000;
+
+  app.get("/api/face/latest-checkin", async (_req, res) => {
+    try {
+      const upstream = await fetch(`${BACKEND_URL}/api/attendance`, {
+        method: "GET",
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!upstream.ok) {
+        return res.status(502).json({
+          success: false,
+          message:
+            "Cannot reach attendance service. Check that the backend is running.",
+          code: "backend_unavailable",
+        });
+      }
+
+      const data = await upstream.json().catch(() => null);
+      if (
+        !data ||
+        typeof data !== "object" ||
+        !Array.isArray((data as { entries?: unknown }).entries)
+      ) {
+        return res.status(502).json({
+          success: false,
+          message:
+            "Cannot reach attendance service. Check that the backend is running.",
+          code: "backend_unavailable",
+        });
+      }
+
+      const entries = (data as { entries: Record<string, unknown>[] }).entries;
+
+      if (entries.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "No gate face recognition found. Please perform a face scan at the gate first.",
+          code: "no_records",
+        });
+      }
+
+      // Flask already returns newest timestamp first; preserve that order when filtering
+      const faceEntries = entries.filter(
+        (e) =>
+          e &&
+          typeof e === "object" &&
+          typeof e.source === "string" &&
+          e.source === "face_recognition"
+      );
+
+      if (faceEntries.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "No recent face recognition found. Please perform a face scan at the gate first.",
+          code: "no_face_entries",
+        });
+      }
+
+      const newest = faceEntries[0];
+      const studentId =
+        typeof newest.student_id === "string" ? newest.student_id.trim() : "";
+      if (!studentId) {
+        return res.status(404).json({
+          success: false,
+          message: "No recent gate face recognition found.",
+          code: "missing_student_id",
+        });
+      }
+
+      const timestamp =
+        typeof newest.timestamp === "string" ? newest.timestamp : "";
+      const parsedMs = Date.parse(timestamp);
+      if (!Number.isFinite(parsedMs)) {
+        return res.status(404).json({
+          success: false,
+          message: "No recent gate face recognition found.",
+          code: "invalid_timestamp",
+        });
+      }
+
+      const ageMs = Date.now() - parsedMs;
+      if (ageMs > FACE_CHECKIN_FRESHNESS_MS) {
+        return res.status(410).json({
+          success: false,
+          message:
+            "The latest gate recognition has expired. Please scan your face at the gate again.",
+          code: "expired",
+        });
+      }
+
+      return res.json({
+        success: true,
+        entry: {
+          id: typeof newest.id === "string" ? newest.id : "",
+          student_id: studentId,
+          student_name:
+            typeof newest.student_name === "string" ? newest.student_name : "",
+          confidence:
+            typeof newest.confidence === "number" ? newest.confidence : 0,
+          timestamp,
+          source: "face_recognition",
+        },
+      });
+    } catch {
+      return res.status(502).json({
+        success: false,
+        message:
+          "Cannot reach attendance service. Check that the backend is running.",
+        code: "backend_unavailable",
+      });
+    }
   });
 
   // Face Enrollment Endpoint
@@ -369,7 +672,7 @@ async function startServer() {
     return res.json({ history: purchasesDb });
   });
 
-  // Proxy PDF upload → FastAPI RAG (/upload)
+  // Proxy PDF upload → Flask classroom notes (pdfplumber + Firebase text)
   app.post("/api/tutor/upload", async (req, res) => {
     try {
       const contentType = req.headers["content-type"];
@@ -377,147 +680,104 @@ async function startServer() {
         return res.status(400).json({ error: "Expected multipart/form-data with a PDF file." });
       }
 
-      const upstream = await fetch(`${AI_TUTOR_URL}/upload`, {
+      const upstream = await fetch(`${BACKEND_URL}/api/classroom/upload`, {
         method: "POST",
         headers: { "content-type": contentType },
-        // Stream the raw multipart body through to FastAPI
         body: Readable.toWeb(req) as unknown as BodyInit,
         duplex: "half",
       } as RequestInit);
 
-      const data = await upstream.json();
-      if (!upstream.ok || data.error) {
-        return res.status(upstream.ok ? 400 : upstream.status).json({
-          error: data.error || "PDF upload failed on AI Tutor service.",
+      const data = await upstream.json().catch(() => null);
+      if (!upstream.ok || !data || data.status === "error") {
+        const status = upstream.status >= 400 ? upstream.status : 400;
+        return res.status(status).json({
+          error: flaskErrorMessage(data, "PDF upload failed on classroom service."),
           details: data,
         });
       }
 
       return res.json({
         success: true,
-        filename: data.filename,
-        pages: data.pages,
-        chunks: data.chunks,
+        notes_id: data.notes_id,
+        pages: data.page_count,
+        text_length: data.text_length,
         message: data.message,
-        documents: data.documents || [],
       });
     } catch (err: unknown) {
       console.error("AI Tutor upload proxy error:", err);
       const errorMsg = err instanceof Error ? err.message : String(err);
       return res.status(502).json({
-        error: `AI Tutor service unreachable at ${AI_TUTOR_URL}. Is rag.py running?`,
+        error: `Classroom AI Tutor is unreachable at ${BACKEND_URL}. Is Flask running?`,
         details: errorMsg,
       });
     }
   });
 
-  // Clear RAG knowledge base on FastAPI
+  // Clear portal PDF library only. Flask has no delete-notes route; Firebase text stays.
   app.delete("/api/tutor/docs", async (_req, res) => {
-    try {
-      const upstream = await fetch(`${AI_TUTOR_URL}/knowledge-base`, { method: "DELETE" });
-      const data = await upstream.json();
-      return res.json(data);
-    } catch (err: unknown) {
-      console.error("AI Tutor clear-docs proxy error:", err);
-      return res.status(502).json({
-        error: `AI Tutor service unreachable at ${AI_TUTOR_URL}.`,
-      });
-    }
+    return res.json({
+      message: "Portal notes library cleared. Classroom notes in Firebase are unchanged.",
+      documents: [],
+    });
   });
 
-  // AI Tutor chat → FastAPI RAG (/chat), Gemini fallback if RAG is down
+  // AI Tutor chat → Flask classroom ask (Groq llama-3.1-8b-instant)
   app.post("/api/tutor/chat", async (req, res) => {
-    const { prompt, pdfContexts, history, filenames } = req.body;
+    const { prompt, notes_id: notesIdRaw, question: questionRaw } = req.body ?? {};
 
-    if (!prompt) {
+    const question =
+      typeof prompt === "string" && prompt.trim()
+        ? prompt.trim()
+        : typeof questionRaw === "string" && questionRaw.trim()
+          ? questionRaw.trim()
+          : "";
+
+    if (!question) {
       return res.status(400).json({ error: "Prompt is required." });
     }
 
-    const activeFilenames: string[] =
-      Array.isArray(filenames) && filenames.length > 0
-        ? filenames
-        : Array.isArray(pdfContexts)
-          ? pdfContexts.map((d: { name: string }) => d.name).filter(Boolean)
-          : [];
+    const notes_id =
+      typeof notesIdRaw === "string" && notesIdRaw.trim() ? notesIdRaw.trim() : "";
 
-    let question = prompt;
-    if (history && Array.isArray(history) && history.length > 0) {
-      const formattedHistory = history
-        .slice(-6)
-        .map((msg: { sender: string; text: string }) => `${msg.sender.toUpperCase()}: ${msg.text}`)
-        .join("\n");
-      question = `Prior Conversation History:\n${formattedHistory}\n\nStudent Current Question: ${prompt}`;
+    if (!notes_id) {
+      return res.status(400).json({
+        error: "notes_id is required. Upload a classroom PDF first.",
+      });
     }
 
     try {
-      const upstream = await fetch(`${AI_TUTOR_URL}/chat`, {
+      const upstream = await fetch(`${BACKEND_URL}/api/classroom/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          question,
-          filenames: activeFilenames.length > 0 ? activeFilenames : null,
-        }),
+        body: JSON.stringify({ question, notes_id }),
       });
 
-      if (upstream.ok) {
-        const data = await upstream.json();
-        const cited =
-          Array.isArray(data.activeDocs) && data.activeDocs.length > 0
-            ? data.activeDocs
-            : activeFilenames;
-
-        return res.json({
-          text: data.answer,
-          pdfUsed: data.source === "uploaded_document",
-          activeDocs: cited,
-          source: data.source,
-          retrieved_pages: data.retrieved_pages || [],
+      const data = await upstream.json().catch(() => null);
+      if (!upstream.ok || !data || data.status === "error") {
+        const status = upstream.status >= 400 ? upstream.status : 502;
+        return res.status(status).json({
+          error: flaskErrorMessage(data, "Classroom ask failed."),
+          text: null,
         });
       }
 
-      console.warn("AI Tutor RAG returned non-OK status:", upstream.status);
+      const answer = typeof data.answer === "string" ? data.answer : "";
+      const source = typeof data.source === "string" ? data.source : notes_id;
+
+      return res.json({
+        text: answer,
+        pdfUsed: true,
+        activeDocs: source ? [source] : [],
+        source,
+        model: data.model || "llama-3.1-8b-instant",
+      });
     } catch (err: unknown) {
-      console.error("AI Tutor RAG proxy error:", err);
+      console.error("AI Tutor classroom proxy error:", err);
+      return res.status(502).json({
+        error: `Classroom AI Tutor is unreachable at ${BACKEND_URL}. Is Flask running?`,
+        text: null,
+      });
     }
-
-    // Optional Gemini fallback when FastAPI is offline
-    if (process.env.GEMINI_API_KEY) {
-      try {
-        const aiClient = getGeminiClient();
-        let systemInstruction = `You are "Professor Cybera", National College's elite AI Voice Tutor.
-Explain academic concepts clearly with structure, examples, and mentorship.`;
-
-        if (Array.isArray(pdfContexts) && pdfContexts.length > 0) {
-          const compiled = pdfContexts
-            .map(
-              (doc: { name: string; contentSnippet?: string; pages?: number }, idx: number) =>
-                `=== DOCUMENT #${idx + 1}: "${doc.name}" ===\n${(doc.contentSnippet || "").substring(0, 4000)}`
-            )
-            .join("\n\n");
-          systemInstruction += `\n\nCourse materials:\n${compiled.substring(0, 16000)}`;
-        }
-
-        const response = await aiClient.models.generateContent({
-          model: "gemini-2.0-flash",
-          contents: question,
-          config: { systemInstruction, temperature: 0.7 },
-        });
-
-        return res.json({
-          text: response.text || "I analyzed your query. How else can I help?",
-          pdfUsed: activeFilenames.length > 0,
-          activeDocs: activeFilenames,
-          source: "gemini_fallback",
-        });
-      } catch (geminiErr) {
-        console.error("Gemini fallback error:", geminiErr);
-      }
-    }
-
-    return res.status(502).json({
-      error: `AI Tutor RAG service is unreachable at ${AI_TUTOR_URL}. Start it with: python ai-tutor/rag/rag.py`,
-      text: null,
-    });
   });
 
   // AI Tutor Text-To-Speech Generation Route

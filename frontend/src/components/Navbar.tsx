@@ -43,6 +43,10 @@ export const Navbar: React.FC<NavbarProps> = ({
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    setDropdownOpen(false);
+  }, [student?.id, student?.role]);
+
   const navItems = [
     { id: 'home', label: 'Home', icon: Home },
     { id: 'tutor', label: 'AI Tutor', icon: Sparkles },
@@ -122,19 +126,27 @@ export const Navbar: React.FC<NavbarProps> = ({
                   onClick={() => setDropdownOpen(!dropdownOpen)}
                   className="flex items-center space-x-2.5 bg-[#221f1c] border border-[#383129] hover:border-[#524639] rounded-2xl p-1.5 pr-3 transition-all focus:outline-none"
                 >
-                  <div className="relative">
+                    <div className="relative">
+                    {student.photoUrl ? (
                     <img
                       src={student.photoUrl}
                       alt={student.name}
                       className="w-8 h-8 rounded-xl object-cover border border-[#524639]"
                       referrerPolicy="no-referrer"
                     />
+                    ) : (
+                    <div className="w-8 h-8 rounded-xl bg-[#383129] border border-[#524639] flex items-center justify-center text-[11px] font-serif italic text-[#e0d7d0]">
+                      {student.name.trim().slice(0, 1) || 'U'}
+                    </div>
+                    )}
                     <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full border border-[#171614]"></div>
                   </div>
 
                   <div className="hidden sm:block text-left">
                     <div className="text-xs font-semibold text-[#e0d7d0] leading-tight">{student.name}</div>
-                    <div className="text-[10px] text-[#807368] font-mono">{student.rollNumber}</div>
+                    <div className="text-[10px] text-[#807368] font-mono">
+                      {student.role === 'staff' ? `Staff · ${student.rollNumber}` : student.rollNumber}
+                    </div>
                   </div>
 
                   <ChevronDown className={`w-3.5 h-3.5 text-[#807368] transition-transform duration-200 ${dropdownOpen ? 'rotate-180' : ''}`} />
@@ -145,7 +157,11 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <div className="absolute right-0 mt-2 w-60 bg-[#221f1c] rounded-2xl p-2 border border-[#524639] shadow-2xl z-50 animate-in fade-in slide-in-from-top-2">
                     <div className="p-3 border-b border-[#383129]">
                       <p className="text-xs font-bold text-[#e0d7d0]">{student.name}</p>
-                      <p className="text-[10px] text-[#807368] font-mono">{student.email}</p>
+                      <p className="text-[10px] text-[#807368] font-mono">
+                        {student.role === 'staff'
+                          ? `Staff · ${student.id}`
+                          : student.email || student.rollNumber}
+                      </p>
                     </div>
 
                     <div className="py-1">
@@ -157,7 +173,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                         className="w-full flex items-center space-x-2 px-3 py-2 text-xs font-medium text-[#e0d7d0] hover:bg-[#2a2622] rounded-xl transition-colors"
                       >
                         <User className="w-4 h-4 text-[#807368]" />
-                        <span>Student Profile</span>
+                        <span>{student.role === 'staff' ? 'Staff Profile' : 'Student Profile'}</span>
                       </button>
 
                       <button
@@ -189,11 +205,12 @@ export const Navbar: React.FC<NavbarProps> = ({
               </div>
             ) : (
               <button
+                type="button"
                 onClick={onOpenFaceAuth}
                 className="flex items-center space-x-2 px-4 py-2 rounded-xl bg-[#e0d7d0] text-[#171614] font-semibold text-xs shadow-md hover:bg-white transition-all"
               >
                 <ShieldCheck className="w-4 h-4" />
-                <span>Sign In</span>
+                <span>Login</span>
               </button>
             )}
           </div>

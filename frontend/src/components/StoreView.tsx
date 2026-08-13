@@ -19,7 +19,7 @@ import confetti from 'canvas-confetti';
 import { Student, StoreItem, PurchaseRecord } from '../types';
 
 interface StoreViewProps {
-  student: Student;
+  student: Student | null;
   items: StoreItem[];
   purchaseHistory: PurchaseRecord[];
   onPurchaseSuccess: (updatedStudentBalance: number, updatedItem: StoreItem, record: PurchaseRecord) => void;
@@ -52,6 +52,10 @@ export const StoreView: React.FC<StoreViewProps> = ({
   // Trigger Purchase Flow
   const handleInitiatePurchase = (item: StoreItem) => {
     setErrorMessage(null);
+    if (!student) {
+      setErrorMessage('Please sign in to purchase from the Smart Store.');
+      return;
+    }
     if (item.stockCount <= 0) {
       setErrorMessage("This item is currently out of stock in Dispenser #04.");
       return;
@@ -67,7 +71,7 @@ export const StoreView: React.FC<StoreViewProps> = ({
 
   // Confirm Dispense & Connect to IoT Controller
   const handleConfirmDispense = async () => {
-    if (!dispensingModalItem) return;
+    if (!student || !dispensingModalItem) return;
 
     setDispenseStep('signaling');
     setPurchasingItemId(dispensingModalItem.id);
@@ -127,14 +131,18 @@ export const StoreView: React.FC<StoreViewProps> = ({
               <ShoppingBag className="w-6 h-6" />
             </span>
             <div>
-              <div className="text-[9px] font-bold uppercase tracking-[0.3em] text-[#998f86]">Campus IoT Dispenser</div>
+              <div className="text-[9px] font-bold uppercase tracking-[0.3em] text-[#998f86]">
+                {student ? 'Campus IoT Dispenser' : 'Smart Store'}
+              </div>
               <h2 className="text-2xl sm:text-3xl font-light text-[#e0d7d0] font-serif italic">
                 National College Smart Store
               </h2>
             </div>
           </div>
           <p className="text-xs text-[#998f86] max-w-xl font-medium leading-relaxed">
-            Automated dispenser reflecting physical stock loaded at Central Campus Station #04. Triggers physical IoT motor release instantly upon student authorization.
+            {student
+              ? 'Automated dispenser reflecting physical stock loaded at Central Campus Station #04. Triggers physical IoT motor release instantly upon student authorization.'
+              : 'Browse campus products and availability. Sign in to purchase items and access your wallet.'}
           </p>
         </div>
 
@@ -253,6 +261,7 @@ export const StoreView: React.FC<StoreViewProps> = ({
       </div>
 
       {/* ================= PURCHASE HISTORY SECTION ================= */}
+      {student && (
       <div className="glass-card p-8 rounded-3xl border border-slate-700/80 shadow-2xl space-y-6">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-slate-800 pb-4">
           <div className="flex items-center space-x-3">
@@ -312,6 +321,7 @@ export const StoreView: React.FC<StoreViewProps> = ({
           </div>
         )}
       </div>
+      )}
 
       {/* IoT Dispensing Modal Dialog */}
       {dispensingModalItem && (

@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Camera, 
   ShieldCheck, 
-  UserCheck, 
   RefreshCw, 
   Sparkles, 
   UserPlus, 
@@ -10,8 +9,7 @@ import {
   Lock, 
   CheckCircle2, 
   Key, 
-  Scan, 
-  Sliders
+  Scan
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { Student } from '../types';
@@ -35,7 +33,6 @@ export const FaceRecognitionModal: React.FC<FaceRecognitionModalProps> = ({
   const [scanning, setScanning] = useState<boolean>(false);
   const [scanProgress, setScanProgress] = useState<number>(0);
   const [verifiedStudent, setVerifiedStudent] = useState<Student | null>(null);
-  const [selectedPresetId, setSelectedPresetId] = useState<string>(allStudents[0]?.id || 'NC-2026-881');
 
   // Enrollment Form State
   const [enrollName, setEnrollName] = useState<string>('');
@@ -49,63 +46,264 @@ export const FaceRecognitionModal: React.FC<FaceRecognitionModalProps> = ({
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const cameraSessionRef = useRef(0);
 
-  // Keep preset aligned with live allStudents (e.g. MADHU/BALA after /api/students load)
-  useEffect(() => {
-    if (allStudents.length === 0) return;
-    const exists = allStudents.some((s) => s.id === selectedPresetId);
-    if (!exists) {
-      setSelectedPresetId(allStudents[0].id);
+  const stopCameraTracks = () => {
+    console.log('[FaceAuth] cleanup — stopping camera tracks');
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
     }
-  }, [allStudents, selectedPresetId]);
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraActive(false);
+  };
 
-  // Start Camera Stream
-  useEffect(() => {
-    let stream: MediaStream | null = null;
+  /** StrictMode-safe camera start; sessionId discards stale getUserMedia results. */
+  const startCamera = async (sessionId: number) => {
+    console.log('[FaceAuth] camera request started', { sessionId });
+    setCameraError(null);
+    setCameraActive(false);
 
-    if (isOpen && activeMode === 'scan') {
-      setCameraError(null);
-      navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720, facingMode: 'user' } })
-        .then((mediaStream) => {
-          stream = mediaStream;
-          if (videoRef.current) {
-            videoRef.current.srcObject = mediaStream;
-            videoRef.current.play();
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('getUserMedia is not available in this browser');
+      }
+
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 1280, height: 720, facingMode: 'user' },
+      });
+      console.log('[FaceAuth] camera stream obtained', {
+        tracks: mediaStream.getTracks().map((t) => t.label),
+      });
+
+      if (sessionId !== cameraSessionRef.current) {
+        console.log('[FaceAuth] discarding stale stream after session change');
+        mediaStream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
+      streamRef.current = mediaStream;
+
+      const attachToVideo = () => {
+        if (sessionId !== cameraSessionRef.current) {
+          return;
+        }
+
+        const video = videoRef.current;
+        if (!video) {
+          console.log('[FaceAuth] video element not found — retrying attach');
+          requestAnimationFrame(attachToVideo);
+          return;
+        }
+
+        console.log('[FaceAuth] video element found');
+        video.srcObject = mediaStream;
+        console.log('[FaceAuth] stream attached');
+
+        const onLoadedMetadata = () => {
+          console.log('[FaceAuth] video metadata loaded', {
+            width: video.videoWidth,
+            height: video.videoHeight,
+            readyState: video.readyState,
+          });
+          video.removeEventListener('loadedmetadata', onLoadedMetadata);
+        };
+        video.addEventListener('loadedmetadata', onLoadedMetadata);
+
+        void video
+          .play()
+          .then(() => {
+            if (sessionId !== cameraSessionRef.current) return;
+            console.log('[FaceAuth] video dimensions', {
+              width: video.videoWidth,
+              height: video.videoHeight,
+            });
             setCameraActive(true);
-          }
-        })
-        .catch((err) => {
-          console.error("Camera access error:", err);
-          setCameraActive(false);
-          setCameraError("Camera access permission denied or camera not found. You may use direct student verification or manual ID input below.");
-        });
+          })
+          .catch((playErr) => {
+            console.error('[FaceAuth] video.play() failed:', playErr);
+            if (sessionId !== cameraSessionRef.current) return;
+            setCameraActive(false);
+            setCameraError(
+              'Camera stream obtained but playback failed. Click Retry Camera.'
+            );
+          });
+      };
+
+      attachToVideo();
+    } catch (err) {
+      console.error('[FaceAuth] camera access error:', err);
+      if (sessionId !== cameraSessionRef.current) return;
+      setCameraActive(false);
+      const name = err instanceof Error ? err.name : 'Error';
+      const message = err instanceof Error ? err.message : String(err);
+      setCameraError(
+        `Camera unavailable (${name}: ${message}). Retry camera and try again.`
+      );
     }
+  };
+
+  // Camera lifecycle when modal opens in scan mode
+  useEffect(() => {
+    if (!isOpen || activeMode !== 'scan') {
+      cameraSessionRef.current += 1;
+      stopCameraTracks();
+      return;
+    }
+
+    const sessionId = ++cameraSessionRef.current;
+    void startCamera(sessionId);
 
     return () => {
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
-      }
+      cameraSessionRef.current += 1;
+      stopCameraTracks();
     };
+    // startCamera is stable enough via refs; intentionally keyed on open/mode
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, activeMode]);
 
-  // Trigger Face Scan Process — calls live POST /api/face/verify (no browser face ML)
+  /** Capture current video frame as JPEG data-URL (temporary; not stored). */
+  const captureSnapshotBase64 = (): string | null => {
+    console.log('[FaceAuth] capture started');
+    const video = videoRef.current;
+    if (!video) {
+      console.log('[FaceAuth] capture failed — no video element');
+      return null;
+    }
+    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      console.log('[FaceAuth] capture failed — readyState', video.readyState);
+      return null;
+    }
+    if (video.videoWidth <= 0 || video.videoHeight <= 0) {
+      console.log('[FaceAuth] capture failed — zero dimensions');
+      return null;
+    }
+
+    let canvas = canvasRef.current;
+    if (!canvas) {
+      canvas = document.createElement('canvas');
+      canvasRef.current = canvas;
+    }
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+
+    // Draw unmirrored frame for matching against enrollment photos
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    try {
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      console.log('[FaceAuth] captured image dimensions', {
+        width: canvas.width,
+        height: canvas.height,
+        bytesApprox: dataUrl.length,
+      });
+      return dataUrl;
+    } catch (err) {
+      console.error('[FaceAuth] toDataURL failed:', err);
+      return null;
+    }
+  };
+
+  const finishAuthSuccess = (student: Student) => {
+    setVerifiedStudent(student);
+    setCameraError(null);
+
+    confetti({
+      particleCount: 70,
+      spread: 60,
+      origin: { y: 0.6 },
+      colors: ['#F59E0B', '#06B6D4', '#10B981'],
+    });
+
+    window.setTimeout(() => {
+      onSuccessAuth(student);
+      onClose();
+    }, 1500);
+  };
+
+  const parseVerifyResponse = async (
+    res: Response
+  ): Promise<{ student: Student | null; message: string }> => {
+    const data = await res.json().catch(() => null);
+    const student =
+      data && typeof data === 'object'
+        ? (data as { student?: Student }).student
+        : undefined;
+    const success =
+      data &&
+      typeof data === 'object' &&
+      (data as { success?: unknown }).success === true;
+    const idOk =
+      student &&
+      typeof student.id === 'string' &&
+      student.id.trim().length > 0;
+    const message =
+      data &&
+      typeof data === 'object' &&
+      typeof (data as { message?: unknown }).message === 'string'
+        ? (data as { message: string }).message
+        : 'Face not recognized. Please try again.';
+
+    if (!res.ok || !success || !idOk || !student) {
+      return { student: null, message };
+    }
+    return { student, message };
+  };
+
+  /** Real browser camera match via Express → Flask match-image (never /recognize). */
+  const verifyImageAndAuthorize = async (snapshotBase64: string): Promise<boolean> => {
+    try {
+      console.log('[FaceAuth] verify-image request started');
+      const res = await fetch('/api/face/verify-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ snapshotBase64 }),
+      });
+      const { student, message } = await parseVerifyResponse(res);
+      console.log('[FaceAuth] match result', {
+        ok: Boolean(student),
+        studentId: student?.id,
+        name: student?.name,
+        httpStatus: res.status,
+        message,
+      });
+      if (!student) {
+        setVerifiedStudent(null);
+        setCameraError(
+          message || 'Face not recognized. Please try again.'
+        );
+        return false;
+      }
+      finishAuthSuccess(student);
+      return true;
+    } catch (err) {
+      console.error('[FaceAuth] verify-image failed:', err);
+      setVerifiedStudent(null);
+      setCameraError('Face service unavailable. Check backend connection.');
+      return false;
+    }
+  };
+
+  /** Real Scan: capture frame → verify-image only. Never falls back to preset. */
   const handleStartScan = () => {
     if (scanning) return;
     setScanning(true);
     setScanProgress(0);
     setVerifiedStudent(null);
     setCameraError(null);
-
-    const studentId =
-      allStudents.find((s) => s.id === selectedPresetId)?.id ||
-      allStudents[0]?.id;
-
-    if (!studentId || typeof studentId !== 'string' || !studentId.trim()) {
-      setScanning(false);
-      setScanProgress(0);
-      setCameraError('Student record not found.');
-      return;
-    }
 
     const interval = setInterval(() => {
       setScanProgress((prev) => {
@@ -122,60 +320,27 @@ export const FaceRecognitionModal: React.FC<FaceRecognitionModalProps> = ({
       setScanProgress(100);
 
       void (async () => {
-        try {
-          const res = await fetch('/api/face/verify', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ studentId }),
-          });
-
-          const data = await res.json().catch(() => null);
-          const student =
-            data && typeof data === 'object'
-              ? (data as { student?: Student }).student
-              : undefined;
-          const success =
-            data &&
-            typeof data === 'object' &&
-            (data as { success?: unknown }).success === true;
-          const idOk =
-            student &&
-            typeof student.id === 'string' &&
-            student.id.trim().length > 0;
-
-          if (!res.ok || !success || !idOk || !student) {
-            setScanning(false);
-            setVerifiedStudent(null);
-            const message =
-              data &&
-              typeof data === 'object' &&
-              typeof (data as { message?: unknown }).message === 'string'
-                ? (data as { message: string }).message
-                : 'Student record not found.';
-            setCameraError(message);
-            return;
-          }
-
-          setVerifiedStudent(student);
+        const video = videoRef.current;
+        if (
+          !cameraActive ||
+          !video ||
+          video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
+          video.videoWidth <= 0
+        ) {
+          setCameraError('Camera not ready. Click Retry Camera, then Scan & Match Face.');
           setScanning(false);
-
-          confetti({
-            particleCount: 70,
-            spread: 60,
-            origin: { y: 0.6 },
-            colors: ['#F59E0B', '#06B6D4', '#10B981'],
-          });
-
-          window.setTimeout(() => {
-            onSuccessAuth(student);
-            onClose();
-          }, 1500);
-        } catch (err) {
-          console.error('Face verify failed:', err);
-          setScanning(false);
-          setVerifiedStudent(null);
-          setCameraError('Student record not found.');
+          return;
         }
+
+        const snapshot = captureSnapshotBase64();
+        if (!snapshot) {
+          setCameraError('Could not capture image. Retry camera and try again.');
+          setScanning(false);
+          return;
+        }
+
+        await verifyImageAndAuthorize(snapshot);
+        setScanning(false);
       })();
     }, 1650);
   };
@@ -242,112 +407,58 @@ export const FaceRecognitionModal: React.FC<FaceRecognitionModalProps> = ({
             </div>
           </div>
 
-          <div className="flex space-x-1 bg-slate-950 p-1 rounded-full border border-slate-800">
-            <button
-              onClick={() => setActiveMode('scan')}
-              className={`px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors ${
-                activeMode === 'scan' ? 'bg-cyan-400/20 text-cyan-300 border border-cyan-400/30 shadow' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Scan
-            </button>
-            <button
-              onClick={() => setActiveMode('enroll')}
-              className={`px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors ${
-                activeMode === 'enroll' ? 'bg-cyan-400/20 text-cyan-300 border border-cyan-400/30 shadow' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Enroll
-            </button>
-            <button
-              onClick={() => setActiveMode('manual')}
-              className={`px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors ${
-                activeMode === 'manual' ? 'bg-cyan-400/20 text-cyan-300 border border-cyan-400/30 shadow' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              ID Login
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:text-white bg-slate-950 border border-slate-800"
+          >
+            Close
+          </button>
         </div>
 
         {/* Modal Body */}
         <div className="p-6">
           {activeMode === 'scan' && (
             <div className="space-y-6">
-              
-              {/* Preset Student Selector for Easy Demo Testing */}
-              <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-900/80 border border-slate-800">
-                <span className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-                  <Sliders className="w-3.5 h-3.5 text-amber-400" />
-                  Target Student Profile:
-                </span>
-                <select
-                  value={selectedPresetId}
-                  onChange={(e) => setSelectedPresetId(e.target.value)}
-                  className="bg-slate-950 text-amber-300 text-xs font-bold px-3 py-1.5 rounded-xl border border-slate-700 focus:outline-none focus:border-amber-500 cursor-pointer"
-                >
-                  {allStudents.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name} ({s.rollNumber})
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <p className="text-sm font-semibold text-slate-200">Scan Face to Login</p>
 
-              {/* Camera Scanner Container */}
+              {/* Camera Scanner Container — video always mounted in scan mode */}
               <div className="relative w-full aspect-video rounded-2xl bg-slate-950 border-2 border-slate-800 overflow-hidden shadow-inner flex items-center justify-center">
-                
-                {cameraActive ? (
-                  <video
-                    ref={videoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="w-full h-full object-cover transform -scale-x-100"
-                  />
-                ) : (
-                  <div className="flex flex-col items-center justify-center text-center p-6 space-y-3 z-10">
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className={`absolute inset-0 w-full h-full object-cover transform -scale-x-100 ${
+                    cameraActive ? 'opacity-100' : 'opacity-0'
+                  }`}
+                />
+
+                {!cameraActive && (
+                  <div className="absolute inset-0 z-10 flex flex-col items-center justify-center text-center p-6 space-y-3 bg-slate-950/90">
                     <div className="w-16 h-16 rounded-2xl bg-cyan-950/40 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shadow-lg">
                       <Camera className="w-8 h-8 text-cyan-400" />
                     </div>
                     <p className="text-xs text-slate-300 max-w-sm font-medium">
-                      {cameraError || "Camera access permission dismissed or unavailable."}
+                      {cameraError || 'Starting camera…'}
                     </p>
                     <div className="flex items-center space-x-2 pt-1">
                       <button
                         type="button"
                         onClick={() => {
-                          setCameraError(null);
-                          navigator.mediaDevices?.getUserMedia({ video: { width: 1280, height: 720, facingMode: 'user' } })
-                            .then((mediaStream) => {
-                              if (videoRef.current) {
-                                videoRef.current.srcObject = mediaStream;
-                                videoRef.current.play();
-                                setCameraActive(true);
-                              }
-                            })
-                            .catch((err) => {
-                              console.error("Camera access error retry:", err);
-                              setCameraError("Camera permission dismissed or unavailable in iframe. Demo simulation activated.");
-                            });
+                          const sessionId = ++cameraSessionRef.current;
+                          void startCamera(sessionId);
                         }}
                         className="px-3.5 py-1.5 rounded-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-[11px] font-bold transition-all"
                       >
                         Retry Camera
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleStartScan}
-                        className="px-3.5 py-1.5 rounded-full bg-cyan-400/20 hover:bg-cyan-400/30 border border-cyan-400/40 text-cyan-300 text-[11px] font-bold transition-all"
-                      >
-                        Use Synthetic Biometric Mesh
                       </button>
                     </div>
                   </div>
                 )}
 
                 {/* Face Scanning Overlays */}
-                <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-between p-6">
+                <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-between p-6 z-[5]">
                   
                   {/* Top Status Header */}
                   <div className="w-full flex items-center justify-between text-[11px] font-mono text-cyan-400 bg-slate-950/70 backdrop-blur-md px-3 py-1.5 rounded-lg border border-slate-800">
@@ -420,38 +531,40 @@ export const FaceRecognitionModal: React.FC<FaceRecognitionModalProps> = ({
                   </div>
                 </div>
               ) : (
-                <div className="flex items-center justify-between gap-4">
-                  <div className="text-xs text-slate-400 space-y-0.5 min-w-0">
-                    {cameraError ? (
-                      <p className="font-semibold text-rose-300 flex items-center gap-1.5">
-                        <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                        {cameraError}
-                      </p>
-                    ) : (
-                      <>
-                        <p className="font-semibold text-slate-200">Position face inside reticle frame.</p>
-                        <p>Biometric vector verified against National College registry.</p>
-                      </>
-                    )}
-                  </div>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="text-xs text-slate-400 space-y-0.5 min-w-0">
+                      {cameraError ? (
+                        <p className="font-semibold text-rose-300 flex items-center gap-1.5">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                          {cameraError}
+                        </p>
+                      ) : (
+                        <>
+                          <p className="font-semibold text-slate-200">Position face inside reticle frame.</p>
+                          <p>Biometric vector verified against National College registry.</p>
+                        </>
+                      )}
+                    </div>
 
-                  <button
-                    onClick={handleStartScan}
-                    disabled={scanning}
-                    className="px-6 py-3 rounded-2xl bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 text-slate-950 font-bold text-sm shadow-xl hover:shadow-amber-500/30 transition-all duration-300 glow-gold hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 flex items-center space-x-2 shrink-0"
-                  >
-                    {scanning ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                        <span>Verifying...</span>
-                      </>
-                    ) : (
-                      <>
-                        <ShieldCheck className="w-4 h-4" />
-                        <span>Scan & Match Face</span>
-                      </>
-                    )}
-                  </button>
+                    <button
+                      onClick={handleStartScan}
+                      disabled={scanning}
+                      className="px-6 py-3 rounded-2xl bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 text-slate-950 font-bold text-sm shadow-xl hover:shadow-amber-500/30 transition-all duration-300 glow-gold hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 flex items-center space-x-2 shrink-0"
+                    >
+                      {scanning ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                          <span>Verifying...</span>
+                        </>
+                      ) : (
+                        <>
+                          <ShieldCheck className="w-4 h-4" />
+                          <span>Scan & Match Face</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
