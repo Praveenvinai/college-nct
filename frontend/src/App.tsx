@@ -15,23 +15,91 @@ import { StoreView } from './components/StoreView';
 import { ProfileView } from './components/ProfileView';
 import { ContactView } from './components/ContactView';
 import { FaceRecognitionModal } from './components/FaceRecognitionModal';
-import { INITIAL_STUDENTS, INITIAL_STORE_ITEMS, INITIAL_ANNOUNCEMENTS, INITIAL_PURCHASES } from './mockData';
+import { INITIAL_STUDENTS, INITIAL_ANNOUNCEMENTS } from './mockData';
 import {
   Student,
   StoreItem,
+  StoreUser,
   Announcement,
   PurchaseRecord,
+  PurchaseStatus,
   AttendanceLog,
   GateLog,
   LogLoadStatus,
 } from './types';
 
+/** Flask transaction status → display status. */
+const PURCHASE_STATUS_LABELS: Record<string, PurchaseStatus> = {
+  pending: 'Pending',
+  dispensing: 'Dispensing',
+  completed: 'Completed',
+  failed: 'Failed',
+};
+
+function formatPurchaseTimestamp(raw: unknown): string {
+  if (typeof raw !== 'string' || !raw) return '';
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw;
+  return parsed.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function mapPurchaseMethod(row: Record<string, unknown>): string {
+  const method = typeof row.purchase_method === 'string' ? row.purchase_method : '';
+  const source = typeof row.source === 'string' ? row.source : '';
+  if (
+    method === 'manual_button' ||
+    source === 'smart_store_manual' ||
+    source === 'smart_store'
+  ) {
+    return 'Manual Button';
+  }
+  if (source === 'smart_store_purchase') {
+    return 'Portal Purchase';
+  }
+  return method || source || 'Manual Button';
+}
+
+/** Map one Flask store_sales_log entry into the portal PurchaseRecord shape. */
+function mapPurchaseRecord(row: Record<string, unknown>): PurchaseRecord | null {
+  const transactionId = typeof row.transaction_id === 'string' ? row.transaction_id : '';
+  if (!transactionId) return null;
+
+  const dispenserSlot =
+    typeof row.dispenser_slot === 'number' && Number.isFinite(row.dispenser_slot)
+      ? Math.trunc(row.dispenser_slot)
+      : null;
+  const itemSlot = typeof row.item_slot === 'string' ? row.item_slot : '';
+  const status =
+    typeof row.status === 'string' ? PURCHASE_STATUS_LABELS[row.status] ?? 'Pending' : 'Pending';
+
+  return {
+    id: transactionId,
+    studentId: typeof row.user_id === 'string' ? row.user_id : '',
+    studentName: typeof row.user_name === 'string' ? row.user_name : '',
+    itemId: itemSlot,
+    itemName: typeof row.item === 'string' ? row.item : '',
+    price: typeof row.price === 'number' ? row.price : 0,
+    timestamp: formatPurchaseTimestamp(row.timestamp ?? row.requested_at),
+    status,
+    location:
+      dispenserSlot === null
+        ? 'Smart Store Dispenser'
+        : `Smart Store Dispenser · Slot ${dispenserSlot}`,
+    itemSlot,
+    dispenserSlot,
+    purchaseMethod: mapPurchaseMethod(row),
+  };
+}
+
 export default function App() {
   const [allStudents, setAllStudents] = useState<Student[]>(INITIAL_STUDENTS);
   const [currentStudent, setCurrentStudent] = useState<Student | null>(null);
-  const [storeItems, setStoreItems] = useState<StoreItem[]>(INITIAL_STORE_ITEMS);
+  const [storeItems, setStoreItems] = useState<StoreItem[]>([]);
+  const [storeUser, setStoreUser] = useState<StoreUser | null>(null);
   const [announcements] = useState<Announcement[]>(INITIAL_ANNOUNCEMENTS);
-  const [purchases, setPurchases] = useState<PurchaseRecord[]>(INITIAL_PURCHASES);
+  const [purchases, setPurchases] = useState<PurchaseRecord[]>([]);
+  const [storeSalesLog, setStoreSalesLog] = useState<PurchaseRecord[]>([]);
+  const [storeRefreshKey, setStoreRefreshKey] = useState(0);
 
   const [activeTab, setActiveTab] = useState<string>('home');
   const [isFaceAuthModalOpen, setIsFaceAuthModalOpen] = useState<boolean>(false);
@@ -68,16 +136,115 @@ export default function App() {
       .catch((err) => {
         console.log("Using seed student records:", err);
       });
+  }, []);
+
+  // Live physical dispenser inventory (Express → Flask → Firebase).
+  // There is no demo fallback: the store only ever shows real stock.
+  useEffect(() => {
+    let cancelled = false;
 
     fetch('/api/store/items')
       .then((res) => res.json())
       .then((data) => {
-        if (data.items && Array.isArray(data.items)) {
-          setStoreItems(data.items);
-        }
+        if (cancelled) return;
+        setStoreItems(
+          data && Array.isArray(data.items) ? (data.items as StoreItem[]) : []
+        );
       })
-      .catch((err) => console.log("Using seed store inventory:", err));
+      .catch(() => {
+        if (!cancelled) setStoreItems([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [storeRefreshKey]);
+
+  // Overall store_sales_log for the Smart Store dashboard (includes manual buttons).
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch('/api/store/sales')
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        if (!data || !Array.isArray(data.purchases)) {
+          setStoreSalesLog([]);
+          return;
+        }
+        const mapped: PurchaseRecord[] = [];
+        for (const row of data.purchases as unknown[]) {
+          if (!row || typeof row !== 'object') continue;
+          const record = mapPurchaseRecord(row as Record<string, unknown>);
+          if (record) mapped.push(record);
+        }
+        setStoreSalesLog(mapped);
+      })
+      .catch(() => {
+        if (!cancelled) setStoreSalesLog([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [storeRefreshKey]);
+
+  // Refresh live stock and overall sales so ESP32 button purchases appear.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setStoreRefreshKey((key) => key + 1);
+    }, 3000);
+    return () => window.clearInterval(id);
   }, []);
+
+  // Keep the store identity in step with the signed-in user. A visitor
+  // identified by RFID inside the store keeps their identity until sign-out.
+  useEffect(() => {
+    if (currentStudent) {
+      setStoreUser({
+        id: currentStudent.id,
+        name: currentStudent.name,
+        role: currentStudent.role ?? 'student',
+      });
+    } else {
+      setStoreUser(null);
+    }
+  }, [currentStudent?.id, currentStudent?.name, currentStudent?.role]);
+
+  // Real purchase history for whoever is identified at the store.
+  useEffect(() => {
+    const userId = storeUser?.id;
+    if (!userId) {
+      setPurchases([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    fetch(`/api/store/history?user_id=${encodeURIComponent(userId)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        if (!data || !Array.isArray(data.purchases)) {
+          setPurchases([]);
+          return;
+        }
+        const mapped: PurchaseRecord[] = [];
+        for (const row of data.purchases as unknown[]) {
+          if (!row || typeof row !== 'object') continue;
+          const record = mapPurchaseRecord(row as Record<string, unknown>);
+          if (record) mapped.push(record);
+        }
+        setPurchases(mapped);
+      })
+      .catch(() => {
+        if (!cancelled) setPurchases([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [storeUser?.id, storeRefreshKey]);
 
   // Live attendance + gate logs for the current student (Express → Flask → Firebase)
   useEffect(() => {
@@ -173,22 +340,10 @@ export default function App() {
     setIsFaceAuthModalOpen(false);
   };
 
-  // Handle Vending Machine Purchase Success
-  const handlePurchaseSuccess = (updatedBalance: number, updatedItem: StoreItem, record: PurchaseRecord) => {
-    if (currentStudent) {
-      setCurrentStudent((prev) => prev ? { ...prev, walletBalance: updatedBalance } : null);
-    }
-
-    setStoreItems((prev) =>
-      prev.map((item) => (item.id === updatedItem.id ? updatedItem : item))
-    );
-
-    setPurchases((prev) => [record, ...prev]);
-  };
-
   // Sign out: clear session and return to public visitor Home
   const handleSignOut = () => {
     setCurrentStudent(null);
+    setStoreUser(null);
     setIsFaceAuthModalOpen(false);
     setIsLeftDashboardOpen(false);
     setActiveTab('home');
@@ -260,14 +415,8 @@ export default function App() {
 
             {activeTab === 'store' && (
               <StoreView
-                student={currentStudent}
                 items={storeItems}
-                purchaseHistory={
-                  currentStudent
-                    ? purchases.filter((p) => p.studentId === currentStudent.id)
-                    : []
-                }
-                onPurchaseSuccess={handlePurchaseSuccess}
+                purchaseHistory={storeSalesLog}
               />
             )}
 

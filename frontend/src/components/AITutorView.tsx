@@ -197,7 +197,8 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ student }) => {
       setIsPaused(false);
       setSpeakingMessageId(null);
     };
-    utterance.onerror = () => {
+    utterance.onerror = (event) => {
+      console.error('Speech synthesis error:', event.error);
       if (utteranceRef.current !== utterance) return;
       utteranceRef.current = null;
       setIsSpeaking(false);
@@ -214,6 +215,7 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ student }) => {
       speakTimeoutRef.current = null;
       if (utteranceRef.current !== utterance) return;
       window.speechSynthesis.speak(utterance);
+      window.speechSynthesis.resume();
     }, 50);
   };
 
@@ -391,6 +393,10 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ student }) => {
       const data = await response.json();
 
       if (!response.ok || data.error) {
+        console.error('AI tutor chat failed:', {
+          status: response.status,
+          error: data.error,
+        });
         setMessages((prev) => [
           ...prev,
           {

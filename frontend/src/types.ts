@@ -1,4 +1,5 @@
-export type UserRole = 'student' | 'staff';
+/** Roles resolved server-side by Flask from Firebase students/staff/visitor. */
+export type UserRole = 'student' | 'staff' | 'visitor';
 
 export interface Student {
   id: string;
@@ -94,6 +95,23 @@ export interface StoreItem {
   description: string;
   imageUrl: string;
   badge: 'In Stock' | 'Low Stock' | 'Out of Stock';
+  /** Firebase store_inventory key, e.g. 'slot_1'. */
+  itemSlot?: string;
+  /** Physical dispenser position the servo drives. */
+  dispenserSlot?: number | null;
+}
+
+/** Mirrors a Flask transaction state from store_sales_log. */
+export type PurchaseStatus = 'Pending' | 'Dispensing' | 'Completed' | 'Failed';
+
+/**
+ * Identity used for a store purchase. Always produced from a Firebase-backed
+ * lookup (face sign-in or POST /api/store/identify), never chosen client-side.
+ */
+export interface StoreUser {
+  id: string;
+  name: string;
+  role: UserRole;
 }
 
 export interface PurchaseRecord {
@@ -104,8 +122,11 @@ export interface PurchaseRecord {
   itemName: string;
   price: number;
   timestamp: string;
-  status: 'Dispensed & Delivered' | 'Processing IoT' | 'Failed';
+  status: PurchaseStatus;
   location: string;
+  itemSlot?: string;
+  dispenserSlot?: number | null;
+  purchaseMethod?: string;
 }
 
 export interface Announcement {

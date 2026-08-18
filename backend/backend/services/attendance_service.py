@@ -324,7 +324,12 @@ def log_staff_rfid_attendance(staff_id: str, staff_name: str, department: str) -
 
 
 def log_rfid_gate_access(card_uid: str) -> dict:
-    """Verify RFID card, push a gate_log entry, and return granted person info."""
+    """Verify RFID card, push a gate_log entry, and return granted person info.
+
+    Staff scans also attempt one attendance_log write per IST day. The return
+    dict includes attendance_recorded / attendance_duplicate so callers can
+    distinguish a gate grant from a new attendance row.
+    """
     found = find_student_by_rfid(card_uid)
     role = "student"
     if found is None:
@@ -355,8 +360,12 @@ def log_rfid_gate_access(card_uid: str) -> dict:
 
     get_ref("gate_log").push(record)
 
+    attendance_recorded = False
+    attendance_duplicate = False
     if role == "staff":
-        log_staff_rfid_attendance(person_id, person_name, department)
+        attendance = log_staff_rfid_attendance(person_id, person_name, department)
+        attendance_recorded = bool(attendance.get("recorded"))
+        attendance_duplicate = bool(attendance.get("duplicate"))
 
     return {
         "student_id": person_id,
@@ -364,4 +373,6 @@ def log_rfid_gate_access(card_uid: str) -> dict:
         "id": person_id,
         "name": person_name,
         "role": role,
+        "attendance_recorded": attendance_recorded,
+        "attendance_duplicate": attendance_duplicate,
     }

@@ -156,7 +156,7 @@ export const INITIAL_PURCHASES: PurchaseRecord[] = [
     itemName: 'Cold Brew Nitro Espresso (330ml)',
     price: 4.50,
     timestamp: '2026-08-08 09:14 AM',
-    status: 'Dispensed & Delivered',
+    status: 'Completed',
     location: 'Central Library Dispenser #04'
   },
   {
@@ -167,7 +167,7 @@ export const INITIAL_PURCHASES: PurchaseRecord[] = [
     itemName: 'National College Matte Leather Journal',
     price: 18.50,
     timestamp: '2026-08-07 02:45 PM',
-    status: 'Dispensed & Delivered',
+    status: 'Completed',
     location: 'Computer Science Hub Dispenser #01'
   }
 ];

@@ -33,6 +33,8 @@ def scan():
                     "name": result["name"],
                     "role": result["role"],
                     "action": "open_gate",
+                    "attendance_recorded": bool(result.get("attendance_recorded")),
+                    "attendance_duplicate": bool(result.get("attendance_duplicate")),
                 }
             ),
             200,

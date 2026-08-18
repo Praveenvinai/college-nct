@@ -12,7 +12,7 @@ _BACKEND_DIR = Path(__file__).resolve().parent
 load_dotenv(_BACKEND_DIR / ".env")
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = "llama-3.1-8b-instant"
+GROQ_MODEL = "openai/gpt-oss-20b"
 
 
 def _get_api_key() -> str:
@@ -68,7 +68,10 @@ def ask_groq(notes_text: str, question: str) -> str:
 
     try:
         data = response.json()
-        content = data["choices"][0]["message"]["content"]
+        message = data["choices"][0]["message"]
+        content = message.get("content")
+        if not (isinstance(content, str) and content.strip()):
+            content = message.get("reasoning_content") or message.get("reasoning")
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise RuntimeError("Groq API returned an unexpected response") from exc
 

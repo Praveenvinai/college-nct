@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from firebase_config import get_ref
-from gemini_client import ask_groq
+from gemini_client import GROQ_MODEL, ask_groq
 from pdf_extractor import extract_pdf_text
 
 
@@ -55,5 +55,5 @@ def ask_notes_question(notes_id: str, question: str) -> dict:
     return {
         "answer": answer,
         "source": notes_id,
-        "model": "llama-3.1-8b-instant",
+        "model": GROQ_MODEL,
     }

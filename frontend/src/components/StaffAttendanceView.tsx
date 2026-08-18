@@ -27,32 +27,47 @@ export const StaffAttendanceView: React.FC<StaffAttendanceViewProps> = ({
     }
 
     let cancelled = false;
-    setStatus('loading');
+    let isFirstLoad = true;
 
-    fetch(`/api/attendance?student_id=${encodeURIComponent(staffId)}`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`attendance HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((data) => {
-        if (cancelled) return;
-        if (!data || typeof data !== 'object' || !Array.isArray(data.entries)) {
-          setEntries([]);
-          setStatus('error');
-          return;
-        }
-        const list = data.entries as AttendanceLog[];
-        setEntries(list);
-        setStatus(list.length === 0 ? 'empty' : 'ready');
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setEntries([]);
-        setStatus('error');
-      });
+    const load = () => {
+      if (isFirstLoad) setStatus('loading');
+
+      fetch(`/api/attendance?student_id=${encodeURIComponent(staffId)}`)
+        .then((res) => {
+          if (!res.ok) throw new Error(`attendance HTTP ${res.status}`);
+          return res.json();
+        })
+        .then((data) => {
+          if (cancelled) return;
+          if (!data || typeof data !== 'object' || !Array.isArray(data.entries)) {
+            if (isFirstLoad) {
+              setEntries([]);
+              setStatus('error');
+            }
+            return;
+          }
+          const list = data.entries as AttendanceLog[];
+          setEntries(list);
+          setStatus(list.length === 0 ? 'empty' : 'ready');
+        })
+        .catch(() => {
+          if (cancelled) return;
+          if (isFirstLoad) {
+            setEntries([]);
+            setStatus('error');
+          }
+        })
+        .finally(() => {
+          isFirstLoad = false;
+        });
+    };
+
+    load();
+    const intervalId = window.setInterval(load, 3000);
 
     return () => {
       cancelled = true;
+      window.clearInterval(intervalId);
     };
   }, [student.id]);
 

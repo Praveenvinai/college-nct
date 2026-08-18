@@ -107,6 +107,29 @@ FLASK_ENV=development
 PORT=5000
 ```
 
+### Smart Store device mode
+
+`POST /api/store/purchase` reserves stock and queues a dispense command. How
+that command completes is controlled by `STORE_DEVICE_MODE`:
+
+| Value | Behaviour |
+| --- | --- |
+| `hardware` | **Default.** The transaction stays `pending` until a real device reports a result via `POST /api/store/device/result`. Nothing is ever auto-completed. |
+| `simulation` | Development/testing only. The device handshake is simulated immediately and every affected record is tagged `simulated: true` with `device_id: "simulator"`. |
+
+Simulation is never implicit: an unset, empty or unrecognised value falls back to
+`hardware` and logs a warning. Enable it explicitly and only before the ESP32 is
+wired up:
+
+```env
+STORE_DEVICE_MODE=simulation
+```
+
+`STORE_COMMAND_TTL_SECONDS` (default `90`) is how long a queued command stays
+valid. Once it expires the transaction is marked `failed` and the reserved unit
+is returned to `store_inventory`, so an unreachable dispenser can never leave
+stock permanently held.
+
 ---
 
 ## Firebase Data Model
@@ -115,12 +138,27 @@ Root nodes used by the backend:
 
 ```text
 students
+staff
+visitor
 attendance_log
 gate_log
 store_inventory
 store_sales_log
+store_dispense_queue
+store_purchase_keys
 classroom_notes
 ```
+
+`store_sales_log` is the single store transaction ledger. Records created by the
+purchase flow add `user_id`, `user_name`, `role`, `dispenser_slot`, `status`,
+`requested_at`, `completed_at`, `device_id` and `idempotency_key`; older records
+written by `POST /api/store/dispense` have no `status` and are read as completed.
+
+`store_dispense_queue` holds only in-flight hardware commands (keyed by
+transaction id) so the node the ESP32 polls stays small; entries are removed once
+a transaction is completed or failed. `store_purchase_keys` is a small
+idempotency index mapping `idempotency_key` to `transaction_id`, which is what
+stops a double click from dispensing twice.
 
 Example `classroom_notes` document:
 

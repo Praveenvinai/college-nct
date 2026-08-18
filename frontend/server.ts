@@ -4,13 +4,13 @@ import path from "path";
 import { Readable } from "stream";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
-import { INITIAL_STUDENTS, INITIAL_STORE_ITEMS, INITIAL_PURCHASES } from "./src/mockData";
-import { Student, StoreItem, PurchaseRecord, SupportTicket } from "./src/types";
+import { INITIAL_STUDENTS } from "./src/mockData";
+import { Student, StoreItem, SupportTicket } from "./src/types";
 
-// In-memory persistent database store
+// In-memory persistent database store.
+// The Smart Store no longer keeps state here: inventory, purchases and history
+// are owned by Flask/Firebase and proxied through this BFF.
 let studentsDb: Student[] = [...INITIAL_STUDENTS];
-let storeDb: StoreItem[] = [...INITIAL_STORE_ITEMS];
-let purchasesDb: PurchaseRecord[] = [...INITIAL_PURCHASES];
 let ticketsDb: SupportTicket[] = [];
 
 const BACKEND_URL = (
@@ -89,6 +89,141 @@ async function fetchLiveStudents(): Promise<Student[] | null> {
     return mapped;
   } catch {
     return null;
+  }
+}
+
+const STORE_ITEM_PRESENTATION: Record<
+  string,
+  { description: string; imageUrl: string }
+> = {
+  slot_1: {
+    description: "Gel pen loaded in physical dispenser slot 1.",
+    imageUrl:
+      "https://images.unsplash.com/photo-1513666639414-f795d25747a8?auto=format&fit=crop&w=600&q=80",
+  },
+  slot_2: {
+    description: "Pencil loaded in physical dispenser slot 2.",
+    imageUrl:
+      "https://images.unsplash.com/photo-1644004680400-b9425e4efa18?auto=format&fit=crop&w=600&q=80",
+  },
+  slot_3: {
+    description: "Color pencil loaded in physical dispenser slot 3.",
+    imageUrl:
+      "https://images.unsplash.com/photo-1513364776144-60967b0f800f?auto=format&fit=crop&w=600&q=80",
+  },
+};
+
+/** Map one Flask/Firebase inventory slot into the portal StoreItem shape. */
+function mapLiveInventorySlot(row: Record<string, unknown>): StoreItem | null {
+  const itemSlot =
+    typeof row.item_slot === "string" ? row.item_slot.trim() : "";
+  const itemName = typeof row.item === "string" ? row.item.trim() : "";
+  const price =
+    typeof row.price === "number" && Number.isFinite(row.price)
+      ? row.price
+      : null;
+  const stock =
+    typeof row.stock === "number" && Number.isFinite(row.stock)
+      ? Math.max(0, Math.trunc(row.stock))
+      : null;
+
+  if (!itemSlot || !itemName || price === null || price < 0 || stock === null) {
+    return null;
+  }
+
+  const dispenserSlot =
+    typeof row.dispenser_slot === "number" &&
+    Number.isFinite(row.dispenser_slot)
+      ? Math.trunc(row.dispenser_slot)
+      : null;
+  const presentation = STORE_ITEM_PRESENTATION[itemSlot];
+  const slotLabel = dispenserSlot === null ? itemSlot : `${dispenserSlot}`;
+
+  return {
+    id: itemSlot,
+    itemSlot,
+    dispenserSlot,
+    name: itemName,
+    price,
+    stockCount: stock,
+    maxStock: Math.max(stock, 500),
+    category: "stationery",
+    description:
+      presentation?.description ??
+      `${itemName} loaded in physical dispenser slot ${slotLabel}.`,
+    imageUrl:
+      presentation?.imageUrl ??
+      "https://images.unsplash.com/photo-1544816155-12df9643f363?auto=format&fit=crop&w=600&q=80",
+    badge:
+      stock === 0 ? "Out of Stock" : stock <= 3 ? "Low Stock" : "In Stock",
+  };
+}
+
+/**
+ * Fetch live physical inventory through Flask.
+ * Returns null when the backend response is unavailable or malformed.
+ */
+async function fetchLiveStoreItems(): Promise<StoreItem[] | null> {
+  try {
+    const upstream = await fetch(`${BACKEND_URL}/api/store/inventory`, {
+      method: "GET",
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!upstream.ok) return null;
+
+    const data = await upstream.json().catch(() => null);
+    if (
+      !data ||
+      typeof data !== "object" ||
+      !Array.isArray((data as { inventory?: unknown }).inventory)
+    ) {
+      return null;
+    }
+
+    const mapped: StoreItem[] = [];
+    for (const row of (data as { inventory: unknown[] }).inventory) {
+      if (!row || typeof row !== "object") continue;
+      const item = mapLiveInventorySlot(row as Record<string, unknown>);
+      if (item) mapped.push(item);
+    }
+    return mapped;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Forward a Smart Store request to Flask and pass the response straight
+ * through. Flask owns purchase state, so this BFF adds no store state of its
+ * own and never rewrites the upstream status code.
+ */
+async function proxyStoreRequest(
+  res: express.Response,
+  apiPath: string,
+  init?: { method?: "GET" | "POST"; body?: unknown }
+) {
+  const method = init?.method ?? "GET";
+  try {
+    const upstream = await fetch(`${BACKEND_URL}${apiPath}`, {
+      method,
+      headers: method === "POST" ? { "Content-Type": "application/json" } : undefined,
+      body: method === "POST" ? JSON.stringify(init?.body ?? {}) : undefined,
+      signal: AbortSignal.timeout(15000),
+    });
+
+    const data = await upstream.json().catch(() => null);
+    if (data === null) {
+      return res.status(502).json({
+        status: "error",
+        message: "Smart Store backend returned an invalid response.",
+      });
+    }
+    return res.status(upstream.status).json(data);
+  } catch {
+    return res.status(503).json({
+      status: "error",
+      message: "Smart Store service is unavailable. Please try again.",
+    });
   }
 }
 
@@ -597,79 +732,76 @@ async function startServer() {
     });
   });
 
-  // Vending Machine Store Catalog
-  app.get("/api/store/items", (_req, res) => {
-    res.json({ items: storeDb });
-  });
-
-  // Execute Vending Machine Purchase & IoT Stock Dispense
-  app.post("/api/store/purchase", (req, res) => {
-    const { studentId, itemId } = req.body;
-
-    const student = studentsDb.find((s) => s.id === studentId);
-    if (!student) {
-      return res.status(404).json({ success: false, message: "Student record not found." });
-    }
-
-    const itemIndex = storeDb.findIndex((i) => i.id === itemId);
-    if (itemIndex === -1) {
-      return res.status(404).json({ success: false, message: "Store item not found in dispenser." });
-    }
-
-    const item = storeDb[itemIndex];
-
-    if (item.stockCount <= 0) {
-      return res.status(400).json({ success: false, message: "Item is currently out of stock." });
-    }
-
-    if (student.walletBalance < item.price) {
-      return res.status(400).json({
-        success: false,
-        message: `Insufficient student wallet balance. Required: $${item.price.toFixed(2)}, Available: $${student.walletBalance.toFixed(2)}`,
+  // Live physical vending-machine inventory (Express → Flask → Firebase)
+  app.get("/api/store/items", async (_req, res) => {
+    const items = await fetchLiveStoreItems();
+    if (items === null) {
+      return res.status(503).json({
+        items: [],
+        source: "unavailable",
+        message: "Live store inventory is currently unavailable.",
       });
     }
+    return res.json({ items, source: "firebase" });
+  });
 
-    // Deduct student balance and update store item stock
-    student.walletBalance -= item.price;
-    item.stockCount -= 1;
-    if (item.stockCount === 0) {
-      item.badge = "Out of Stock";
-    } else if (item.stockCount <= 3) {
-      item.badge = "Low Stock";
-    }
-
-    // Create purchase transaction record
-    const newRecord: PurchaseRecord = {
-      id: `tx-${Math.floor(1000 + Math.random() * 9000)}`,
-      studentId: student.id,
-      studentName: student.name,
-      itemId: item.id,
-      itemName: item.name,
-      price: item.price,
-      timestamp: new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short" }),
-      status: "Dispensed & Delivered",
-      location: "Central Library Dispenser #04",
-    };
-
-    purchasesDb.unshift(newRecord);
-
-    return res.json({
-      success: true,
-      updatedBalance: student.walletBalance,
-      updatedItem: item,
-      purchaseRecord: newRecord,
-      message: `IoT Signal Sent! ${item.name} dispensed successfully.`,
+  // Resolve an RFID card to a store user (Express → Flask → Firebase).
+  // Read-only: it does not touch the RFID gate, gate logs or attendance.
+  app.post("/api/store/identify", async (req, res) => {
+    const body = req.body ?? {};
+    return proxyStoreRequest(res, "/api/store/identify", {
+      method: "POST",
+      body: { card_uid: body.card_uid },
     });
   });
 
-  // Get Purchase History
-  app.get("/api/store/history", (req, res) => {
-    const { studentId } = req.query;
-    if (studentId) {
-      const studentHistory = purchasesDb.filter((p) => p.studentId === studentId);
-      return res.json({ history: studentHistory });
+  // Create a purchase + physical dispense transaction (Express → Flask → Firebase).
+  // Only the identifiers are forwarded; Flask resolves role, item, price,
+  // dispenser slot and stock from Firebase.
+  app.post("/api/store/purchase", async (req, res) => {
+    const body = req.body ?? {};
+    return proxyStoreRequest(res, "/api/store/purchase", {
+      method: "POST",
+      body: {
+        user_id: body.user_id,
+        item_slot: body.item_slot,
+        idempotency_key: body.idempotency_key,
+      },
+    });
+  });
+
+  // Poll one purchase transaction's state.
+  app.get("/api/store/purchase/:transactionId", async (req, res) => {
+    const transactionId = String(req.params.transactionId ?? "").trim();
+    if (!transactionId) {
+      return res.status(400).json({ status: "error", message: "transaction_id is required" });
     }
-    return res.json({ history: purchasesDb });
+    return proxyStoreRequest(
+      res,
+      `/api/store/purchase/${encodeURIComponent(transactionId)}`
+    );
+  });
+
+  // Purchase history for one user. user_id is required upstream, so a caller
+  // cannot read another user's purchases.
+  app.get("/api/store/history", async (req, res) => {
+    const userId = typeof req.query.user_id === "string" ? req.query.user_id.trim() : "";
+    if (!userId) {
+      return res.status(400).json({ status: "error", message: "user_id is required" });
+    }
+    const query = new URLSearchParams({ user_id: userId });
+    return proxyStoreRequest(res, `/api/store/history?${query.toString()}`);
+  });
+
+  // Overall store_sales_log, including student-less manual button rows.
+  app.get("/api/store/sales", async (req, res) => {
+    const query = new URLSearchParams();
+    const limit = typeof req.query.limit === "string" ? req.query.limit.trim() : "";
+    if (limit) {
+      query.set("limit", limit);
+    }
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return proxyStoreRequest(res, `/api/store/sales${suffix}`);
   });
 
   // Proxy PDF upload → Flask classroom notes (pdfplumber + Firebase text)
@@ -721,7 +853,7 @@ async function startServer() {
     });
   });
 
-  // AI Tutor chat → Flask classroom ask (Groq llama-3.1-8b-instant)
+  // AI Tutor chat → Flask classroom ask (Groq openai/gpt-oss-20b)
   app.post("/api/tutor/chat", async (req, res) => {
     const { prompt, notes_id: notesIdRaw, question: questionRaw } = req.body ?? {};
 
@@ -769,7 +901,7 @@ async function startServer() {
         pdfUsed: true,
         activeDocs: source ? [source] : [],
         source,
-        model: data.model || "llama-3.1-8b-instant",
+        model: data.model || "openai/gpt-oss-20b",
       });
     } catch (err: unknown) {
       console.error("AI Tutor classroom proxy error:", err);
