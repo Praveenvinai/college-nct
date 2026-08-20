@@ -828,13 +828,31 @@ async function startServer() {
         });
       }
 
-      return res.json({
+      const payload: Record<string, unknown> = {
         success: true,
         notes_id: data.notes_id,
         pages: data.page_count,
         text_length: data.text_length,
         message: data.message,
-      });
+      };
+
+      // Pass through PDF summary if the classroom service produced one.
+      if (typeof data.summary === "string" && data.summary.trim()) {
+        payload.summary = data.summary.trim();
+      }
+
+      // Pass through figure metadata if present. Rename snake_case → camelCase.
+      if (data.figure && typeof data.figure === "object") {
+        const fig = data.figure as Record<string, unknown>;
+        payload.figure = {
+          page: fig.page,
+          imageBase64: fig.image_base64,
+          mimeType: fig.mime_type,
+          caption: fig.caption,
+        };
+      }
+
+      return res.json(payload);
     } catch (err: unknown) {
       console.error("AI Tutor upload proxy error:", err);
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -896,12 +914,22 @@ async function startServer() {
       const answer = typeof data.answer === "string" ? data.answer : "";
       const source = typeof data.source === "string" ? data.source : notes_id;
 
+      // Pass through optional slide data when the Flask service identified a relevant slide.
+      const slideImageBase64 =
+        typeof data.slide_image_base64 === "string" && data.slide_image_base64
+          ? data.slide_image_base64
+          : null;
+      const slideNumber =
+        typeof data.slide_num === "number" ? data.slide_num : null;
+
       return res.json({
         text: answer,
         pdfUsed: true,
         activeDocs: source ? [source] : [],
         source,
         model: data.model || "openai/gpt-oss-20b",
+        slideImageBase64,
+        slideNumber,
       });
     } catch (err: unknown) {
       console.error("AI Tutor classroom proxy error:", err);

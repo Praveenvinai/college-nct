@@ -36,7 +36,7 @@ const FRIENDLY_UPLOAD_ERROR =
   'Unable to upload that PDF right now.\n\nPlease try again.';
 
 function slugNotesId(filename: string): string {
-  const base = filename.replace(/\.pdf$/i, '');
+  const base = filename.replace(/\.(pdf|pptx)$/i, '');
   const slug = base
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
@@ -223,11 +223,25 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ student }) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    const fileList: File[] = Array.from(files).filter((f: File) =>
-      f.name.toLowerCase().endsWith('.pdf')
+    const fileList: File[] = (Array.from(files) as File[]).filter((f: File) =>
+      f.name.toLowerCase().endsWith('.pdf') || f.name.toLowerCase().endsWith('.pptx')
     );
+
+    // Detect unsupported old .ppt format
+    const hasPpt = (Array.from(files) as File[]).some(
+      (f: File) =>
+        f.name.toLowerCase().endsWith('.ppt') && !f.name.toLowerCase().endsWith('.pptx')
+    );
+    if (hasPpt) {
+      alert(
+        '.ppt files are not supported.\n\nPlease re-save the file as .pptx in PowerPoint (File → Save As → PowerPoint Presentation) and try again.'
+      );
+      e.target.value = '';
+      return;
+    }
+
     if (fileList.length === 0) {
-      alert('Please upload a PDF file. Classroom notes are extracted from PDFs only.');
+      alert('Please upload a PDF or PPTX file. Only .pdf and .pptx formats are supported.');
       e.target.value = '';
       return;
     }
@@ -282,6 +296,8 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ student }) => {
       };
 
       setPdfDocuments([newDoc]);
+
+      // --- Existing upload confirmation message (unchanged) -----------------
       setMessages((prev) => [
         ...prev,
         {
@@ -292,6 +308,25 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ student }) => {
           pdfSources: [file.name],
         },
       ]);
+
+      // --- Auto-generated PDF summary message (new) -------------------------
+      const summaryText =
+        typeof data.summary === 'string' && data.summary.trim() ? data.summary.trim() : null;
+      if (summaryText) {
+        const fig = data.figure && typeof data.figure === 'object' ? data.figure : null;
+        const summaryMsg: TutorMessage = {
+          id: `msg-summary-${Date.now()}`,
+          sender: 'ai',
+          text: summaryText,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          pdfSources: [file.name],
+          isSummary: true,
+          figureBase64: fig?.imageBase64 ?? undefined,
+          figureMimeType: fig?.mimeType ?? undefined,
+          figureCaption: fig?.caption ?? undefined,
+        };
+        setMessages((prev) => [...prev, summaryMsg]);
+      }
     } catch (err) {
       console.error('PDF upload error:', err);
       setMessages((prev) => [
@@ -410,8 +445,13 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ student }) => {
         return;
       }
 
-      const aiResponseText =
-        data.text || 'I analyzed your question using the uploaded classroom notes.';
+      // Strip any leaked RELEVANT_SLIDE marker (safety net — backend already removes it)
+      const aiResponseText = (
+        data.text || 'I analyzed your question using the uploaded classroom notes.'
+      ).replace(/\nRELEVANT_SLIDE:\s*\d+\s*$/im, '').trim();
+
+      const slideNum: number | null =
+        typeof data.slideNumber === 'number' ? data.slideNumber : null;
 
       const aiMsg: TutorMessage = {
         id: `ai-${Date.now()}`,
@@ -419,6 +459,12 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ student }) => {
         text: aiResponseText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         pdfSources: data.activeDocs?.length ? data.activeDocs : activeDocNames,
+        slideImageBase64:
+          typeof data.slideImageBase64 === 'string' && data.slideImageBase64
+            ? data.slideImageBase64
+            : undefined,
+        slideNumber: slideNum ?? undefined,
+        slideCaption: slideNum ? `Slide ${slideNum}` : undefined,
       };
 
       setMessages((prev) => [...prev, aiMsg]);
@@ -551,10 +597,10 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ student }) => {
           <div className="flex flex-wrap items-center gap-2">
             <label className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#e0d7d0] text-[#171614] text-xs font-semibold cursor-pointer hover:bg-white transition-colors focus-within:ring-2 focus-within:ring-[#807368]">
               <Upload className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>{isParsingPDF ? 'Extracting notes...' : 'Upload lecture PDF'}</span>
+              <span>{isParsingPDF ? 'Analysing notes...' : 'Upload lecture PDF / PPTX'}</span>
               <input
                 type="file"
-                accept=".pdf,application/pdf"
+                accept=".pdf,.pptx,application/pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation"
                 onChange={handleMultiplePDFUpload}
                 className="sr-only"
                 disabled={isParsingPDF}
@@ -687,8 +733,18 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ student }) => {
             return (
               <article key={msg.id} className="space-y-2 max-w-3xl">
                 <p className="text-xs font-semibold uppercase tracking-wide text-[#998f86]">
-                  {isAI ? 'AI Professor' : 'You'}
+                  {isAI ? (msg.isSummary ? 'PDF Summary' : 'AI Professor') : 'You'}
                 </p>
+
+                {/* Summary label for auto-generated summary messages */}
+                {msg.isSummary && (
+                  <div className="flex items-center gap-2 pb-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-[#807368] bg-[#2a2622] border border-[#524639]/40 px-2.5 py-1 rounded-lg">
+                      📄 Auto Summary
+                    </span>
+                  </div>
+                )}
+
                 <div
                   className={`text-sm leading-7 whitespace-pre-wrap ${
                     isAI ? 'text-[#e0d7d0]' : 'text-[#c7b8ac]'
@@ -696,6 +752,48 @@ export const AITutorView: React.FC<AITutorViewProps> = ({ student }) => {
                 >
                   {msg.text}
                 </div>
+
+                {/* Extracted PDF figure displayed below the summary text */}
+                {msg.isSummary && msg.figureBase64 && (
+                  <div className="mt-3 space-y-1.5">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-[#807368]">
+                      Key Figure
+                    </p>
+                    <div className="rounded-xl overflow-hidden border border-[#524639]/40 bg-[#171614] inline-block max-w-full">
+                      <img
+                        src={`data:${msg.figureMimeType ?? 'image/png'};base64,${msg.figureBase64}`}
+                        alt={msg.figureCaption ?? 'PDF figure'}
+                        className="block max-w-full h-auto"
+                        style={{ maxWidth: '100%' }}
+                      />
+                    </div>
+                    {msg.figureCaption && (
+                      <p className="text-[11px] text-[#998f86] italic">{msg.figureCaption}</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Relevant Slide/Page image display for Q&A answers */}
+                {!msg.isSummary && msg.slideImageBase64 && (
+                  <div className="mt-3 space-y-1.5">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-[#807368] flex items-center gap-1.5">
+                      <span>📊 Relevant Slide</span>
+                      {msg.slideNumber && <span>— {msg.slideNumber}</span>}
+                    </p>
+                    <div className="rounded-xl overflow-hidden border border-[#524639]/40 bg-[#171614] inline-block max-w-full">
+                      <img
+                        src={`data:image/jpeg;base64,${msg.slideImageBase64}`}
+                        alt={msg.slideCaption ?? `Slide ${msg.slideNumber || ''}`}
+                        className="block max-w-full h-auto"
+                        style={{ maxWidth: '100%' }}
+                      />
+                    </div>
+                    {msg.slideCaption && (
+                      <p className="text-[11px] text-[#998f86] italic">{msg.slideCaption}</p>
+                    )}
+                  </div>
+                )}
+
 
                 {isAI && msg.pdfSources && msg.pdfSources.length > 0 && (
                   <p className="text-[11px] text-[#998f86] flex flex-wrap items-center gap-1.5">

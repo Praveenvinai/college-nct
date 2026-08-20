@@ -70,8 +70,20 @@ export interface TutorMessage {
   text: string;
   timestamp: string;
   pdfSource?: string;
-  pdfSources?: string[];
+  pdfSources?: string[]
   audioBase64?: string;
+  /** True when this message is an auto-generated PDF summary (not a Q&A response). */
+  isSummary?: boolean;
+  /** Base64-encoded PNG of the key figure extracted from the PDF. */
+  figureBase64?: string;
+  figureMimeType?: string;
+  figureCaption?: string;
+  /** Base64-encoded JPEG of the slide/page most relevant to this Q&A answer. */
+  slideImageBase64?: string;
+  /** 1-indexed slide or page number identified as most relevant. */
+  slideNumber?: number;
+  /** Human-readable label for the relevant slide, e.g. "Slide 3". */
+  slideCaption?: string;
 }
 
 export interface PDFDocument {
@@ -83,6 +95,8 @@ export interface PDFDocument {
   contentSnippet: string;
   isActive?: boolean;
   notesId?: string;
+  /** Auto-generated summary produced at upload time. */
+  summary?: string;
 }
 
 export interface StoreItem {
